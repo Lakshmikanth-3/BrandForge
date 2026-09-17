@@ -10,8 +10,9 @@ and settle per call in USDC on Algorand under a developer-set budget. The reliab
 record the bridge builds from its own routed traffic is itself sold as a paid x402
 endpoint.
 
-> Status: **Phase 0 complete** — foundation, TestNet accounts, health surface, deploy config.
-> Not yet on MainNet. See `PRD — Agentic x402 Bridge + Trust Layer` for the full plan.
+> Status: **Phase 1 complete** — paid x402 route live on TestNet, trace engine, receipt
+> store, settlement listener, and a live flow UI driven entirely by real traces.
+> Not yet on MainNet. Discovery (`bazaar: true`) is Phase 2.
 
 ## Stack
 
@@ -35,9 +36,10 @@ same split the Foundation's own demo uses.
 
 ```
 packages/shared   network constants + validated env schema (the NETWORK switch)
-packages/api      Hono server: /healthz, /livez, static site, paid routes (Phase 1)
+packages/api      Hono server: paid x402 route, trace engine, receipt store,
+                  settlement listener, read API + SSE stream
 packages/mcp      MCP server exposing catalog services as tools (Phase 3)
-apps/web          status page / dashboard, live from /healthz
+apps/web          React + Vite dashboard: live flow visualiser, receipts, counters
 scripts           account creation and the Phase 0 account gate
 skills            Algorand agent skills (algorand-devrel/algorand-agent-skills)
 ```
@@ -85,6 +87,39 @@ npm run typecheck
 | `packages/shared/src/env.test.ts` | NETWORK switch, env rejection, secret containment |
 | `packages/shared/src/networks.test.ts` | Live contract test against facilitator `/supported` |
 | `packages/api/src/app.test.ts` | `/healthz` + `/livez` shape, CORS, no key leakage |
+| `packages/api/src/x402.test.ts` | 402 conformance, ASA/base units, challenge tag, tracing, receipt idempotency |
+| `packages/api/src/trace.test.ts` | Stall detection, halt-point marking, persistence |
+
+### The paid route
+
+`POST /v1/orchestrate` — $0.05 USDC. Unpaid requests get a spec-compliant 402 whose
+challenge is carried in the `payment-required` header, base64 JSON (x402 v2 puts it in
+the header, not the body):
+
+```
+network  algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=
+amount   "50000"            # $0.05 resolved to USDC base units
+asset    "10458941"
+extra    { tag: "x402-global-challenge", feePayer: "ZMFK2OI7...RA22AA" }
+```
+
+**CAIP-2 warning.** Use the full 44-char genesis hash from `packages/shared`, not
+`ALGORAND_*_CAIP2` from `@x402/avm` — those are truncated to 32 chars per the CAIP-2
+spec and do not match what the facilitator advertises. A test pins this.
+
+### Live flow, and why it is trustworthy
+
+Every payment attempt produces a **trace**: per-step state (`pending`, `active`, `ok`,
+`failed`, `skipped`, `stalled`) with real timings, streamed to the browser over SSE at
+`/api/stream`. The UI renders only what a trace reports, so it shows where a payment
+actually is — including which step it stopped or stalled on. `stalled` fires when a step
+exceeds its budget (settle: 8s, against ~3s Algorand finality) and can still resolve to
+`ok`, because slow is not the same as broken. If the stream drops, the flow freezes and
+says "stream down" rather than continuing to animate.
+
+Verify and settle are reported as one step. From inside the resource server they are one
+facilitator round trip, so splitting them would mean inventing a timing. Phase 3 splits
+them, where we are the paying client and genuinely observe both.
 
 ## Deploy
 

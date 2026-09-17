@@ -31,15 +31,20 @@ try {
   throw err;
 }
 
-const app = createApp(config);
+const { app, listener } = createApp(config);
 
 // One Railway service owns the whole root domain: API paths plus the static site.
 // The Foundation's one-root-domain-per-payTo rule means these must not be split.
-app.use("/*", serveStatic({ root: "./apps/web" }));
+// Built Vite output. `npm run build` produces it; a missing dist just means the
+// API serves 404 for the page, not that the API is down.
+app.use("/*", serveStatic({ root: "./apps/web/dist" }));
+
+listener.start();
 
 serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`✓ Sentry402 api  network=${config.network.name}  port=${config.port}`);
   console.log(`  merchant ${config.merchantAddress}`);
   console.log(`  payer    ${config.payerAddress}`);
   console.log(`  health   ${config.publicBaseUrl}/healthz`);
+  console.log(`  paid     POST ${config.publicBaseUrl}/v1/orchestrate  ($0.05 USDC)`);
 });

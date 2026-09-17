@@ -12,7 +12,7 @@ const env = {
   BUILD_SHA: "test-sha",
 } satisfies NodeJS.ProcessEnv;
 
-const app = createApp(loadConfig(env));
+const { app } = createApp(loadConfig(env), ":memory:");
 
 describe("/livez", () => {
   it("answers without touching the network", async () => {

@@ -2,6 +2,12 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { publicConfig, type AppConfig } from "@sentry402/shared";
 import { accountStatus, type AccountStatus } from "./chain.js";
+import { Store } from "./db.js";
+import { TraceHub } from "./trace.js";
+import { traceMiddleware } from "./tracing.js";
+import { apiRoutes } from "./api.js";
+import { ROUTE_PATHS, x402Middleware } from "./x402.js";
+import { SettlementListener } from "./listener.js";
 
 export interface DependencyStatus {
   readonly name: string;
@@ -60,8 +66,27 @@ export async function healthReport(config: AppConfig): Promise<HealthReport> {
   };
 }
 
-export function createApp(config: AppConfig): Hono {
+export interface AppParts {
+  app: Hono;
+  store: Store;
+  hub: TraceHub;
+  listener: SettlementListener;
+}
+
+/** $0.05 in USDC base units. Kept as an integer; floats never hold money. */
+const ORCHESTRATE_PRICE_BASE = 50_000;
+
+export function createApp(config: AppConfig, storePath?: string): AppParts {
   const app = new Hono();
+  const store = new Store(storePath ?? "data/sentry402.sqlite");
+  const hub = new TraceHub(store, config.network.name);
+  hub.hydrate();
+  const listener = new SettlementListener(
+    config.network,
+    store,
+    config.merchantAddress,
+    ROUTE_PATHS.orchestrate,
+  );
 
   // The facilitator's probe checks CORS headers (PRD §19).
   app.use("*", cors({ origin: "*", allowHeaders: ["*"], exposeHeaders: ["*"] }));
@@ -74,5 +99,24 @@ export function createApp(config: AppConfig): Hono {
   // Liveness only — never touches the network, so a chain outage can't restart us.
   app.get("/livez", (c) => c.json({ alive: true, buildSha: config.buildSha }));
 
-  return app;
+  app.route("/api", apiRoutes(config, store, hub));
+
+  // Order matters: the tracer wraps the payment middleware so it observes both
+  // the 402 it issues and the settlement it completes.
+  app.use(`${ROUTE_PATHS.orchestrate}`, traceMiddleware(hub, store, config, ORCHESTRATE_PRICE_BASE));
+  app.use(`${ROUTE_PATHS.orchestrate}`, x402Middleware(config));
+
+  // Phase 1 payload is a stub. Phase 3 replaces this body with the bridged call;
+  // the payment path above does not change.
+  app.post(ROUTE_PATHS.orchestrate, (c) =>
+    c.json({
+      phase: 1,
+      note: "Payment path live. Downstream routing lands in Phase 3.",
+      network: config.network.name,
+      settledTo: config.merchantAddress,
+      at: new Date().toISOString(),
+    }),
+  );
+
+  return { app, store, hub, listener };
 }
