@@ -1,0 +1,24 @@
+{
+  "name": "sentry402",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Sentry402 — agentic x402 bridge and trust layer on Algorand",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "npm run dev -w @sentry402/api",
+    "build": "tsc --build",
+    "typecheck": "tsc --build --force",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "accounts:create": "tsx scripts/create-accounts.ts",
+    "accounts:check": "tsx scripts/check-accounts.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
