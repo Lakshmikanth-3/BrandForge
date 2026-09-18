@@ -13,6 +13,7 @@ import { metadataRoutes } from "./metadata.js";
 import { BudgetGuard } from "./budget.js";
 import { DownstreamPayer } from "./payer.js";
 import { TrustEngine } from "./trust.js";
+import { INJECT_PREFIX, mountInjectRoutes } from "./inject.js";
 
 export interface DependencyStatus {
   readonly name: string;
@@ -126,6 +127,11 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
   }
 
   app.route("/api", apiRoutes(config, store, hub, guard, trust, payer));
+
+  // Deliberately broken endpoints for failure injection. Null on mainnet, where
+  // routes that exist to misbehave have no business on the probed domain.
+  const inject = mountInjectRoutes(config);
+  if (inject) app.route(INJECT_PREFIX, inject);
   // Served at the root, since the facilitator probes the domain, not a subpath.
   app.route("/", metadataRoutes(config));
 

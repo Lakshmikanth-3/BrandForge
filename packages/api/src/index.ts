@@ -16,5 +16,13 @@ export { CatalogIngester, CURATED, isAllowlisted, probeService } from "./catalog
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";
 export { PRICES, ROUTE_PATHS } from "./x402.js";
+export {
+  mountInjectRoutes,
+  injectUrl,
+  INJECTED,
+  INJECT_PREFIX,
+  INJECT_EXPECTED_BASE,
+} from "./inject.js";
+export type { InjectedBehaviour } from "./inject.js";
 export { createApp } from "./app.js";
 export type { AppParts } from "./app.js";
