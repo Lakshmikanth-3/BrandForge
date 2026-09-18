@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FlowVisualiser } from "./FlowVisualiser";
 import { useLive } from "./useLive";
@@ -166,6 +166,22 @@ export default function App() {
 
       <section>
         <div className="sec-head">
+          <h3>Trust lookup</h3>
+          <span className="dim mono">
+            free here · {flow?.prices.trust ?? "$0.02"} at {flow?.routes.trust ?? "/v1/trust"}
+          </span>
+        </div>
+        <p className="note">
+          Paste any x402 endpoint url. This returns exactly what the paid route returns
+          and exactly what the payment gate acts on — the same record, not a preview of
+          it. An endpoint we have not routed enough calls to comes back{" "}
+          <code>unrated</code> rather than with a number we cannot justify.
+        </p>
+        <TrustLookup />
+      </section>
+
+      <section>
+        <div className="sec-head">
           <h3>Route-around log</h3>
           <span className="dim mono">a refusal is a feature</span>
         </div>
@@ -256,6 +272,120 @@ function ServiceTable({ services }: { services: Service[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function TrustLookup() {
+  const [url, setUrl] = useState("");
+  const [record, setRecord] = useState<TrustRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const lookup = useCallback(async () => {
+    const target = url.trim();
+    if (target.length === 0) return;
+    setLoading(true);
+    setError(null);
+    setRecord(null);
+    try {
+      const res = await fetch(`/api/trust?url=${encodeURIComponent(target)}`);
+      if (res.status === 429) {
+        setError("Rate limited. The paid route at /v1/trust is not rate limited.");
+        return;
+      }
+      if (!res.ok) {
+        setError(`Lookup failed: HTTP ${res.status}`);
+        return;
+      }
+      setRecord((await res.json()) as TrustRecord);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "lookup failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [url]);
+
+  return (
+    <div className="panel lookup">
+      <form
+        className="lookup-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void lookup();
+        }}
+      >
+        <input
+          className="lookup-input"
+          type="url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://some-x402-endpoint.example/resource"
+          aria-label="Endpoint url to look up"
+        />
+        <button className="btn" type="submit" disabled={loading || url.trim().length === 0}>
+          {loading ? "looking up" : "look up"}
+        </button>
+      </form>
+
+      {error ? <p className="note bad-text lookup-out">{error}</p> : null}
+
+      {record ? (
+        <div className="lookup-out">
+          <div className="lookup-head">
+            <TrustBadge trust={record} />
+            <span className="dim mono lookup-basis">{record.basis}</span>
+          </div>
+          <div className="scroll">
+            <table>
+              <tbody>
+                <LookupRow label="verdict" value={record.verdict} />
+                <LookupRow
+                  label="score"
+                  value={record.score === null ? "unrated" : record.score.toFixed(4)}
+                />
+                <LookupRow label="observations" value={String(record.observations)} />
+                <LookupRow
+                  label="success rate"
+                  value={
+                    record.successRate === null
+                      ? "\u2014"
+                      : `${(record.successRate * 100).toFixed(1)}%`
+                  }
+                />
+                <LookupRow
+                  label="paid, got nothing"
+                  value={String(record.paidNothingCount)}
+                />
+                <LookupRow
+                  label="median latency"
+                  value={
+                    record.medianLatencyMs === null ? "\u2014" : `${record.medianLatencyMs}ms`
+                  }
+                />
+                <LookupRow label="cold starts" value={String(record.coldStartCount)} />
+                <LookupRow
+                  label="last seen"
+                  value={
+                    record.lastSeenAt === null
+                      ? "never"
+                      : new Date(record.lastSeenAt).toLocaleString()
+                  }
+                />
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LookupRow({ label, value }: { label: string; value: string }) {
+  return (
+    <tr>
+      <td className="dim lookup-label">{label}</td>
+      <td className="num">{value}</td>
+    </tr>
   );
 }
 

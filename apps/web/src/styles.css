@@ -693,3 +693,56 @@ footer {
   color: var(--bad);
   border-color: var(--bad);
 }
+
+/* -- trust lookup -- */
+
+.lookup {
+  padding: 14px;
+}
+
+.lookup-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lookup-input {
+  flex: 1 1 320px;
+  min-width: 0;
+  font: 12px/1 var(--mono);
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
+.lookup-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.lookup-out {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.lookup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.lookup-basis {
+  font-size: 11px;
+}
+
+.lookup-label {
+  width: 170px;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+}
