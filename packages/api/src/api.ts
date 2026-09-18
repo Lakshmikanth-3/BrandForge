@@ -14,6 +14,7 @@ import type { TrustEngine } from "./trust.js";
 import { CURATED } from "./catalog.js";
 import { RateLimiter } from "./trustcache.js";
 import { Reconciler, receiptsAsCsv } from "./reconcile.js";
+import { Verifier } from "./verification.js";
 
 export function apiRoutes(
   config: AppConfig,
@@ -28,6 +29,7 @@ export function apiRoutes(
   // The free lookup is what the UI and a curious judge use. Payment limits the paid
   // route; nothing limits a free one, so this does.
   const lookupLimiter = new RateLimiter();
+  const verifier = new Verifier(config);
 
   /** Static shape of the flow, so the UI can render the pipeline before traffic. */
   api.get("/flow", (c) =>
@@ -143,6 +145,12 @@ export function apiRoutes(
     // A dirty report is a 409, so a monitor notices without parsing the body.
     return c.json(report, report.clean ? 200 : 409);
   });
+
+  /**
+   * Verification panel. Each row is read live from the source that would disprove
+   * it, and a failing row is returned as failing.
+   */
+  api.get("/verification", async (c) => c.json(await verifier.report()));
 
   /** Receipt export. Every line carries a transaction id. */
   api.get("/receipts.csv", (c) => {

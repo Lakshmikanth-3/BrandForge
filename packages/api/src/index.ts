@@ -16,6 +16,8 @@ export { CatalogIngester, CURATED, isAllowlisted, probeService } from "./catalog
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";
 export { Reconciler, receiptsAsCsv } from "./reconcile.js";
+export { Verifier, REPO_URL } from "./verification.js";
+export type { VerificationReport, VerificationRow, CheckStatus } from "./verification.js";
 export type { ReconcileReport, Discrepancy } from "./reconcile.js";
 export { PRICES, ROUTE_PATHS } from "./x402.js";
 export { TtlCache, RateLimiter, TRUST_CACHE_TTL_MS } from "./trustcache.js";
