@@ -13,6 +13,7 @@ import type { DownstreamPayer } from "./payer.js";
 import type { TrustEngine } from "./trust.js";
 import { CURATED } from "./catalog.js";
 import { RateLimiter } from "./trustcache.js";
+import { Reconciler, receiptsAsCsv } from "./reconcile.js";
 
 export function apiRoutes(
   config: AppConfig,
@@ -124,6 +125,30 @@ export function apiRoutes(
 
     // Identical to what /v1/trust sells and what the payment gate acts on.
     return c.json(trust.recordFor(url));
+  });
+
+  /**
+   * Two-way reconciliation against the indexer. Exposed because a dashboard that
+   * cannot be checked against the chain is just a claim.
+   */
+  api.get("/reconcile", async (c) => {
+    const fromRound = Number(c.req.query("fromRound"));
+    const reconciler = new Reconciler(
+      config.network,
+      store,
+      config.merchantAddress,
+      payer?.address ?? config.payerAddress,
+    );
+    const report = await reconciler.run(Number.isFinite(fromRound) ? fromRound : null);
+    // A dirty report is a 409, so a monitor notices without parsing the body.
+    return c.json(report, report.clean ? 200 : 409);
+  });
+
+  /** Receipt export. Every line carries a transaction id. */
+  api.get("/receipts.csv", (c) => {
+    c.header("content-type", "text/csv; charset=utf-8");
+    c.header("content-disposition", 'attachment; filename="sentry402-receipts.csv"');
+    return c.body(receiptsAsCsv(store, config.network.explorerTxBase));
   });
 
   /** Every time the bridge routed around a refused service, and why. */

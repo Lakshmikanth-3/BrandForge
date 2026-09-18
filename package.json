@@ -21,7 +21,8 @@
     "accounts:check": "tsx scripts/check-accounts.ts",
     "dev:web": "npm run dev -w @sentry402/web",
     "build:web": "npm run build -w @sentry402/web",
-    "catalog:ingest": "tsx scripts/ingest.ts"
+    "catalog:ingest": "tsx scripts/ingest.ts",
+    "reconcile": "tsx scripts/reconcile.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
