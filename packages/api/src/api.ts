@@ -6,16 +6,26 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { AppConfig } from "@sentry402/shared";
 import type { Store } from "./db.js";
-import { STEPS, type Trace, type TraceHub } from "./trace.js";
+import { FLOWS, STEPS, type Trace, type TraceHub } from "./trace.js";
 import { PRICES, ROUTE_PATHS } from "./x402.js";
+import type { BudgetGuard } from "./budget.js";
+import type { DownstreamPayer } from "./payer.js";
+import { CURATED } from "./catalog.js";
 
-export function apiRoutes(config: AppConfig, store: Store, hub: TraceHub): Hono {
+export function apiRoutes(
+  config: AppConfig,
+  store: Store,
+  hub: TraceHub,
+  guard: BudgetGuard,
+  payer: DownstreamPayer | null,
+): Hono {
   const api = new Hono();
 
   /** Static shape of the flow, so the UI can render the pipeline before traffic. */
   api.get("/flow", (c) =>
     c.json({
       steps: STEPS,
+      flows: FLOWS,
       routes: ROUTE_PATHS,
       prices: PRICES,
       network: config.network.name,
@@ -55,6 +65,51 @@ export function apiRoutes(config: AppConfig, store: Store, hub: TraceHub): Hono 
   api.get("/traces", (c) => {
     const limit = Number(c.req.query("limit") ?? 20);
     return c.json({ traces: hub.recent(Number.isFinite(limit) ? limit : 20) });
+  });
+
+  /** Budget panel: caps, spend against them, and whether outbound is halted. */
+  api.get("/budget", (c) => {
+    const status = guard.status();
+    return c.json({
+      halted: status.halted,
+      day: status.day,
+      spentTodayUsdc: status.committedTodayBase / 1e6,
+      remainingTodayUsdc: status.remainingDayBase / 1e6,
+      caps: {
+        perCallUsdc: status.limits.perCallBase / 1e6,
+        perDayUsdc: status.limits.perDayBase / 1e6,
+        perMerchantPerDayUsdc: status.limits.perMerchantPerDayBase / 1e6,
+      },
+      payerReady: payer !== null,
+      payerAddress: payer?.address ?? null,
+      recent: store.spendLog(25).map((r) => ({
+        ...r,
+        amountUsdc: r.amountBase / 1e6,
+      })),
+    });
+  });
+
+  /** The curated services and their last probe result. */
+  api.get("/services", (c) => {
+    const rows = store.services({ allowlistedOnly: true, network: config.network.caip2 });
+    return c.json({
+      services: CURATED.map((service) => {
+        const row = rows.find((r) => r.resourceUrl === service.url);
+        return {
+          label: service.label,
+          summary: service.summary,
+          url: service.url,
+          method: service.method,
+          priceUsdc: row ? (row.probeLiveAmount ?? row.amountBase) / 1e6 : null,
+          catalogPriceUsdc: row ? row.amountBase / 1e6 : null,
+          probeVerdict: row?.probeVerdict ?? null,
+          probeLatencyMs: row?.probeLatencyMs ?? null,
+          priceDrift: row?.probeDrift ?? null,
+          active: row?.active ?? false,
+          probedAt: row?.probedAt ?? null,
+        };
+      }),
+    });
   });
 
   /**

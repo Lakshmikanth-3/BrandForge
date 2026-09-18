@@ -10,6 +10,8 @@ import { ROUTE_PATHS, x402Middleware } from "./x402.js";
 import { SettlementListener } from "./listener.js";
 import { CatalogIngester } from "./catalog.js";
 import { metadataRoutes } from "./metadata.js";
+import { BudgetGuard } from "./budget.js";
+import { DownstreamPayer } from "./payer.js";
 
 export interface DependencyStatus {
   readonly name: string;
@@ -74,6 +76,9 @@ export interface AppParts {
   hub: TraceHub;
   listener: SettlementListener;
   ingester: CatalogIngester;
+  guard: BudgetGuard;
+  /** Null when the payer could not be constructed; the API still serves. */
+  payer: DownstreamPayer | null;
 }
 
 /** $0.05 in USDC base units. Kept as an integer; floats never hold money. */
@@ -103,8 +108,21 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
   app.get("/livez", (c) => c.json({ alive: true, buildSha: config.buildSha }));
 
   const ingester = new CatalogIngester(config.network, store, config.facilitatorUrl);
+  const guard = new BudgetGuard(store);
 
-  app.route("/api", apiRoutes(config, store, hub));
+  // A bad payer key must not take the whole API down: /healthz still needs to be
+  // able to report why the bridge cannot spend.
+  let payer: DownstreamPayer | null = null;
+  try {
+    payer = new DownstreamPayer(config, store, guard, hub);
+  } catch (err) {
+    console.error(
+      "payer disabled:",
+      err instanceof Error ? err.message : "could not construct payer",
+    );
+  }
+
+  app.route("/api", apiRoutes(config, store, hub, guard, payer));
   // Served at the root, since the facilitator probes the domain, not a subpath.
   app.route("/", metadataRoutes(config));
 
@@ -125,5 +143,5 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     }),
   );
 
-  return { app, store, hub, listener, ingester };
+  return { app, store, hub, listener, ingester, guard, payer };
 }
