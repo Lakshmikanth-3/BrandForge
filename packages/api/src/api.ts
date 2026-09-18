@@ -91,6 +91,22 @@ export function apiRoutes(
     });
   });
 
+  /**
+   * Trust record for any endpoint. This is the shape Phase 5 sells as a paid
+   * route, served free here so the number the UI shows and the number the gate
+   * uses cannot diverge.
+   */
+  api.get("/trust", (c) => {
+    const url = c.req.query("url");
+    if (!url) return c.json({ error: "url query parameter required" }, 400);
+    return c.json(trust.recordFor(url));
+  });
+
+  /** Every time the bridge routed around a refused service, and why. */
+  api.get("/substitutions", (c) =>
+    c.json({ substitutions: store.substitutions(50), policy: trust.currentPolicy }),
+  );
+
   /** The curated services and their last probe result. */
   api.get("/services", (c) => {
     const rows = store.services({ allowlistedOnly: true, network: config.network.caip2 });
@@ -109,6 +125,7 @@ export function apiRoutes(
           priceDrift: row?.probeDrift ?? null,
           active: row?.active ?? false,
           probedAt: row?.probedAt ?? null,
+          trust: trust.recordFor(service.url),
         };
       }),
     });

@@ -118,4 +118,31 @@ export interface Service {
   priceDrift: number | null;
   active: boolean;
   probedAt: string | null;
+  trust: TrustRecord;
+}
+
+export type Verdict = "pass" | "warn" | "refuse" | "unrated";
+
+export interface TrustRecord {
+  resourceUrl: string;
+  /** Null when unrated. The UI must render that as unrated, never as zero. */
+  score: number | null;
+  verdict: Verdict;
+  observations: number;
+  successRate: number | null;
+  paidNothingCount: number;
+  medianLatencyMs: number | null;
+  schemaConformance: number | null;
+  coldStartCount: number;
+  lastSeenAt: string | null;
+  basis: string;
+}
+
+export interface Substitution {
+  at: string;
+  refusedUrl: string;
+  refusedScore: number | null;
+  chosenUrl: string | null;
+  chosenScore: number | null;
+  reason: string;
 }

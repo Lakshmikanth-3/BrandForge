@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FlowVisualiser } from "./FlowVisualiser";
 import { useLive } from "./useLive";
-import type { Budget, Receipt, Service, Trace } from "./types";
+import type { Budget, Receipt, Service, Substitution, Trace, TrustRecord } from "./types";
 
 /**
  * The config that works today. It points at a local build rather than an npm
@@ -20,8 +20,17 @@ const INSTALL_SNIPPET = `{
 }`;
 
 export default function App() {
-  const { traces, stats, flow, receipts, budget, services, streamState, sendUnpaidRequest } =
-    useLive();
+  const {
+    traces,
+    stats,
+    flow,
+    receipts,
+    budget,
+    services,
+    substitutions,
+    streamState,
+    sendUnpaidRequest,
+  } = useLive();
   const [sending, setSending] = useState(false);
   const [lastStatus, setLastStatus] = useState<number | null>(null);
 
@@ -157,6 +166,14 @@ export default function App() {
 
       <section>
         <div className="sec-head">
+          <h3>Route-around log</h3>
+          <span className="dim mono">a refusal is a feature</span>
+        </div>
+        <SubstitutionLog substitutions={substitutions} />
+      </section>
+
+      <section>
+        <div className="sec-head">
           <h3>Budget guard</h3>
           {budget ? (
             <span className={`tag ${budget.halted ? "halted" : ""}`}>
@@ -203,6 +220,7 @@ function ServiceTable({ services }: { services: Service[] }) {
             <th>tool</th>
             <th>price</th>
             <th>catalog</th>
+            <th>trust</th>
             <th>probe</th>
             <th>latency</th>
             <th>what it returns</th>
@@ -222,6 +240,9 @@ function ServiceTable({ services }: { services: Service[] }) {
                   {s.catalogPriceUsdc === null ? "\u2014" : s.catalogPriceUsdc.toFixed(4)}
                   {drifted && s.priceDrift !== null ? ` x${s.priceDrift.toFixed(2)}` : ""}
                 </td>
+                <td>
+                  <TrustBadge trust={s.trust} />
+                </td>
                 <td className={s.probeVerdict === "ok" ? "ok-text" : "bad-text"}>
                   {s.probeVerdict ?? "not probed"}
                 </td>
@@ -236,6 +257,78 @@ function ServiceTable({ services }: { services: Service[] }) {
       </table>
     </div>
   );
+}
+
+function TrustBadge({ trust }: { trust: TrustRecord }) {
+  // An unrated service shows as unrated, never as 0.00. A score from 4 calls must
+  // not look like a score from 400, so the observation count rides along.
+  if (trust.score === null) {
+    return (
+      <span className="trust trust-unrated" title={trust.basis}>
+        unrated
+        <span className="trust-n">{trust.observations}/5</span>
+      </span>
+    );
+  }
+  return (
+    <span className={`trust trust-${trust.verdict}`} title={trust.basis}>
+      <span className="num">{trust.score.toFixed(2)}</span>
+      <span className="trust-n">n={trust.observations}</span>
+    </span>
+  );
+}
+
+function SubstitutionLog({ substitutions }: { substitutions: Substitution[] }) {
+  if (substitutions.length === 0) {
+    return (
+      <p className="note dim">
+        Nothing routed around yet. Each time the trust gate refuses an endpoint it is
+        logged here with the score that caused it, whether or not an alternative existed.
+      </p>
+    );
+  }
+  return (
+    <div className="panel scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>refused</th>
+            <th>score</th>
+            <th>routed to</th>
+            <th>score</th>
+            <th>reason</th>
+            <th>when</th>
+          </tr>
+        </thead>
+        <tbody>
+          {substitutions.map((sub) => (
+            <tr key={`${sub.at}-${sub.refusedUrl}`}>
+              <td className="addr bad-text">{hostOf(sub.refusedUrl)}</td>
+              <td className="num bad-text">
+                {sub.refusedScore === null ? "unrated" : sub.refusedScore.toFixed(2)}
+              </td>
+              <td className="addr ok-text">
+                {sub.chosenUrl === null ? "no alternative" : hostOf(sub.chosenUrl)}
+              </td>
+              <td className="num ok-text">
+                {sub.chosenScore === null ? "\u2014" : sub.chosenScore.toFixed(2)}
+              </td>
+              <td className="dim summary">{sub.reason}</td>
+              <td className="dim">{new Date(sub.at).toLocaleTimeString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 function BudgetPanel({ budget }: { budget: Budget | null }) {
