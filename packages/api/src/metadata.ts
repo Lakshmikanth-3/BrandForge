@@ -35,6 +35,9 @@ export function metadataRoutes(config: AppConfig): Hono {
         "",
         `- POST ${base}${ROUTE_PATHS.orchestrate} (${PRICES.orchestrate} USDC) — route an`,
         `  agent's request to a verified x402 service and return the paid result with a receipt.`,
+        `- GET ${base}${ROUTE_PATHS.trust}?url=<endpoint> (${PRICES.trust} USDC) — the`,
+        `  reliability record for any x402 endpoint, built from calls this bridge routed`,
+        `  and paid for. Endpoints with too few observations are reported as unrated.`,
         "",
         "## Payment",
         "",
@@ -68,6 +71,18 @@ export function metadataRoutes(config: AppConfig): Hono {
       defaultOutputModes: ["application/json"],
       skills: [
         {
+          id: "trust",
+          name: "Check whether an endpoint actually delivers",
+          description:
+            "Given an x402 endpoint url, return its reliability record: a composite " +
+            "score, the observation count behind it, success rate, how often it took " +
+            "payment and returned nothing, and median latency. Unrated when there is " +
+            "not enough evidence to score it.",
+          tags: ["x402", "algorand", "reputation", "reliability"],
+          inputModes: ["application/json"],
+          outputModes: ["application/json"],
+        },
+        {
           id: "orchestrate",
           name: "Pay an x402 service on my behalf",
           description:
@@ -89,6 +104,11 @@ export function metadataRoutes(config: AppConfig): Hono {
             method: "POST",
             path: ROUTE_PATHS.orchestrate,
             price: PRICES.orchestrate,
+          },
+          {
+            method: "GET",
+            path: ROUTE_PATHS.trust,
+            price: PRICES.trust,
           },
         ],
       },

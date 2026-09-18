@@ -246,7 +246,10 @@ describe("domain metadata the facilitator reads", () => {
     expect(body).toContain("facilitator.goplausible.xyz");
   });
 
-  it("serves an agent card advertising only the live route", async () => {
+  it("serves an agent card advertising exactly the live routes", async () => {
+    // This assertion was inverted when the trust route shipped: while it was
+    // unbuilt, advertising it would have been a false claim, and the test enforced
+    // that. Now it is live, so the card must carry it.
     const res = await app().app.request("/.well-known/agent-card.json");
     expect(res.status).toBe(200);
 
@@ -255,14 +258,25 @@ describe("domain metadata the facilitator reads", () => {
     expect(card.payment.x402Version).toBe(2);
     expect(card.payment.network).toBe(TESTNET.caip2);
     expect(card.payment.asset).toBe("10458941");
-    expect(card.payment.routes).toHaveLength(1);
-    expect(card.payment.routes[0]).toMatchObject({
-      method: "POST",
-      path: "/v1/orchestrate",
-      price: "$0.05",
-    });
-    // The trust route is Phase 5. Advertising it now would be a false claim.
-    expect(JSON.stringify(card)).not.toContain("/v1/trust");
+
+    expect(card.payment.routes).toEqual(
+      expect.arrayContaining([
+        { method: "POST", path: "/v1/orchestrate", price: "$0.05" },
+        { method: "GET", path: "/v1/trust", price: "$0.02" },
+      ]),
+    );
+    expect(card.payment.routes).toHaveLength(2);
+    expect(card.skills.map((s: { id: string }) => s.id).sort()).toEqual([
+      "orchestrate",
+      "trust",
+    ]);
+  });
+
+  it("advertises the trust route in llms.txt with its price", async () => {
+    const body = await (await app().app.request("/llms.txt")).text();
+    expect(body).toMatch(/GET .*\/v1\/trust\?url=/);
+    expect(body).toMatch(/\$0\.02/);
+    expect(body).toMatch(/unrated/);
   });
 
   it("never leaks key material in domain metadata", async () => {
