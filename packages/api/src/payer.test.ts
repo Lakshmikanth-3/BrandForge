@@ -80,11 +80,33 @@ describe("DownstreamPayer.pay", () => {
     trust = new TrustEngine(store);
   });
 
-  /** Replaces the payment-wrapped fetch so no real payment is attempted. */
-  function payerWith(impl: typeof fetch) {
+  /**
+   * Replaces both fetches so no real network call happens.
+   *
+   * `plainFetch` serves the pre-flight, which must quote a price before the paid
+   * call is attempted. It defaults to quoting exactly the expected amount, so a
+   * test only overrides it when the quote itself is what is under test.
+   */
+  function payerWith(impl: typeof fetch, plain?: typeof fetch) {
     const payer = new DownstreamPayer(configFor(), store, guard, hub, trust);
     Reflect.set(payer, "paidFetch", impl);
+    Reflect.set(payer, "plainFetch", plain ?? quoting(5_000));
     return payer;
+  }
+
+  /** A pre-flight response quoting `amountBase`, shaped like a real 402. */
+  function quoting(amountBase: number): typeof fetch {
+    return (async () =>
+      new Response(null, {
+        status: 402,
+        headers: {
+          "payment-required": Buffer.from(
+            JSON.stringify({
+              accepts: [{ network: TESTNET.caip2, amount: String(amountBase) }],
+            }),
+          ).toString("base64"),
+        },
+      })) as unknown as typeof fetch;
   }
 
   const settlementHeader = (txId: string) =>
@@ -177,9 +199,11 @@ describe("DownstreamPayer.pay", () => {
   });
 
   it("releases the reservation when the downstream is unreachable", async () => {
-    const payer = payerWith(async () => {
+    // Unreachable is now detected by the pre-flight, before any payment.
+    const dead = (async () => {
       throw new Error("ECONNREFUSED");
-    });
+    }) as unknown as typeof fetch;
+    const payer = payerWith(dead, dead);
 
     const outcome = await payer.pay(service, 5_000, null);
     expect(outcome.ok).toBe(false);
@@ -302,6 +326,19 @@ describe("trust gate enforcement at the payment layer", () => {
   function payerWith(impl: typeof fetch) {
     const payer = new DownstreamPayer(configFor(), store, guard, hub, trust);
     Reflect.set(payer, "paidFetch", impl);
+    Reflect.set(
+      payer,
+      "plainFetch",
+      (async () =>
+        new Response(null, {
+          status: 402,
+          headers: {
+            "payment-required": Buffer.from(
+              JSON.stringify({ accepts: [{ network: TESTNET.caip2, amount: "5000" }] }),
+            ).toString("base64"),
+          },
+        })) as unknown as typeof fetch,
+    );
     return payer;
   }
 
@@ -375,9 +412,11 @@ describe("trust gate enforcement at the payment layer", () => {
   });
 
   it("records a failure when the downstream is unreachable", async () => {
-    const payer = payerWith(async () => {
+    const dead = (async () => {
       throw new Error("ECONNREFUSED");
-    });
+    }) as unknown as typeof fetch;
+    const payer = payerWith(dead);
+    Reflect.set(payer, "plainFetch", dead);
     await payer.pay(service, 5_000, null);
 
     const recorded = store.outcomes(service.url)[0]!;

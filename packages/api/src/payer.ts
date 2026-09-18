@@ -25,6 +25,8 @@ export interface PayOutcome {
   ok: boolean;
   /** Set when the trust gate refused this service. */
   refusedByTrust?: boolean;
+  /** Set when the live price diverged from the expected price beyond tolerance. */
+  refusedByPriceAnomaly?: boolean;
   status: number | null;
   /** The downstream service's response body, verbatim when it parsed as JSON. */
   result: unknown;
@@ -75,8 +77,18 @@ function priceFromChallenge(header: string | null, caip2: string): number | null
   }
 }
 
+/**
+ * How far the live price may drift from the expected price before the call is
+ * refused. Not zero: a service may legitimately reprice slightly, and refusing on
+ * a one-base-unit difference would make the bridge useless. Not generous either:
+ * two live services were found advertising 5x and 8.5x their catalog price.
+ */
+const PRICE_DRIFT_TOLERANCE = 0.25;
+
 export class DownstreamPayer {
   private readonly paidFetch: typeof fetch;
+  /** Unwrapped fetch, for the pre-flight that must NOT pay. */
+  private readonly plainFetch: typeof fetch;
   readonly address: string;
   /**
    * Only the non-secret slice of the config is retained. TypeScript's `private`
@@ -106,6 +118,7 @@ export class DownstreamPayer {
       );
     }
 
+    this.plainFetch = fetch;
     const signer = toClientAvmSigner(Buffer.from(account.sk).toString("base64"));
     // Glob registration, for the same CAIP-2 form mismatch noted in x402.ts.
     const client = new x402Client().register("algorand:*", new ExactAvmScheme(signer));
@@ -185,6 +198,102 @@ export class DownstreamPayer {
         `${(decision.remainingDayBase / 1e6).toFixed(6)} left today`,
     );
 
+    // Pre-flight: ask for the price without paying it.
+    //
+    // wrapFetchWithPayment satisfies a 402 automatically, so there is no point
+    // inside the paid call where the advertised amount can be inspected before the
+    // money commits. An unpaid request is free -- being refused is the documented
+    // behaviour -- and it also warms a sleeping host, which matters on free tiers.
+    this.hub.begin(id, "challenge");
+    let quoted: number | null = null;
+    try {
+      const preflight = await this.plainFetch(service.url, {
+        method: service.method,
+        signal: AbortSignal.timeout(30_000),
+        ...(service.method === "POST"
+          ? {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload ?? {}),
+            }
+          : {}),
+      });
+
+      if (preflight.status !== 402) {
+        // Not a 402 means no payment is owed, so nothing should be sent. A 500
+        // here is the downstream failing before it ever quoted a price.
+        this.guard.release(decision.reservationId);
+        const reason = `expected 402 before paying, got HTTP ${preflight.status}`;
+        this.recordOutcome(service.url, {
+          ok: false,
+          httpStatus: preflight.status,
+          latencyMs: Date.now() - startedAt,
+          settled: false,
+          failureReason: reason,
+        });
+        return fail("challenge", reason);
+      }
+
+      quoted = priceFromChallenge(
+        preflight.headers.get("payment-required"),
+        this.network.caip2,
+      );
+    } catch (err) {
+      this.guard.release(decision.reservationId);
+      const reason = err instanceof Error ? err.message : "downstream unreachable";
+      this.recordOutcome(service.url, {
+        ok: false,
+        httpStatus: null,
+        latencyMs: Date.now() - startedAt,
+        settled: false,
+        failureReason: reason,
+      });
+      return fail("challenge", reason);
+    }
+
+    if (quoted === null) {
+      this.guard.release(decision.reservationId);
+      const reason = "402 carried no price for our network";
+      this.recordOutcome(service.url, {
+        ok: false,
+        httpStatus: 402,
+        latencyMs: Date.now() - startedAt,
+        settled: false,
+        failureReason: reason,
+      });
+      return fail("challenge", reason);
+    }
+
+    const drift = quoted / advertisedAmountBase;
+    if (Math.abs(drift - 1) > PRICE_DRIFT_TOLERANCE) {
+      // Anomaly refusal: the price moved since the registry was built. Surfaced
+      // rather than silently paid, whichever direction it moved.
+      this.guard.release(decision.reservationId);
+      const reason =
+        `price anomaly: expected ${usdc(advertisedAmountBase)}, ` +
+        `endpoint asked ${usdc(quoted)} (x${drift.toFixed(2)})`;
+      this.recordOutcome(service.url, {
+        ok: false,
+        httpStatus: 402,
+        latencyMs: Date.now() - startedAt,
+        settled: false,
+        failureReason: reason,
+      });
+      this.hub.fail(id, "challenge", reason);
+      return {
+        ok: false,
+        refusedByPriceAnomaly: true,
+        status: 402,
+        result: null,
+        txId: null,
+        amountBase: null,
+        latencyMs: Date.now() - startedAt,
+        traceId: id,
+        error: reason,
+      };
+    }
+
+    this.hub.end(id, "challenge", "ok", `quoted ${usdc(quoted)}`);
+
     this.hub.begin(id, "request");
     let res: Response;
     try {
@@ -218,20 +327,10 @@ export class DownstreamPayer {
 
     const settlement = decodeSettlement(res.headers.get("x-payment-response"));
     const txId = settlement?.transaction ?? settlement?.txId ?? settlement?.txid ?? null;
-    const livePrice = priceFromChallenge(
-      res.headers.get("payment-required"),
-      this.network.caip2,
-    );
 
     // A 402 still standing means the wrapper could not satisfy the challenge.
     if (res.status === 402 || !res.ok) {
       this.guard.release(decision.reservationId);
-      this.hub.end(
-        id,
-        "challenge",
-        "ok",
-        livePrice !== null ? `asked ${(livePrice / 1e6).toFixed(6)} USDC` : "402 returned",
-      );
       const reason =
         settlement?.errorReason ?? `downstream returned HTTP ${res.status} after payment attempt`;
       // settled here means money moved and nothing usable came back, which the
@@ -246,7 +345,6 @@ export class DownstreamPayer {
       return fail("payment", reason);
     }
 
-    this.hub.end(id, "challenge", "ok", "requirements satisfied by the payer");
     this.hub.end(id, "payment", "ok", "X-PAYMENT accepted");
     this.hub.end(id, "settle", txId ? "ok" : "skipped", txId ? `tx ${txId}` : "no tx id returned");
 
@@ -358,4 +456,8 @@ export class DownstreamPayer {
       // A scoring write must never fail a payment that already happened.
     }
   }
+}
+
+function usdc(base: number): string {
+  return `$${(base / 1e6).toFixed(6)}`;
 }
