@@ -27,7 +27,8 @@
     "accounts:optin": "tsx scripts/optin-accounts.ts",
     "prober": "tsx scripts/prober.ts",
     "receipts:sync": "tsx scripts/sync-receipts.ts",
-    "settle:inbound": "tsx scripts/settle-inbound.ts"
+    "settle:inbound": "tsx scripts/settle-inbound.ts",
+    "check:endpoint": "tsx scripts/check-endpoint.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
