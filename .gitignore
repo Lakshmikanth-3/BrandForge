@@ -12,3 +12,6 @@ data/
 
 # Local dev aid, vendored from algorand-devrel/algorand-agent-skills
 .claude/skills/
+
+# TypeScript incremental build state
+*.tsbuildinfo
