@@ -448,3 +448,183 @@ describe("settlement listener, both directions", () => {
     expect(result.error).toMatch(/503/);
   });
 });
+
+describe("money that comes back", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+  });
+
+  const paid = (txId: string, payee: string, amountBase = 60_000) =>
+    store.putReceipt({
+      txId,
+      direction: "out",
+      route: "pr_review",
+      payer: PAYER,
+      payee,
+      amountBase,
+      assetId: TESTNET.usdcAsaId,
+      network: "testnet",
+      confirmedRound: 500,
+      settledAt: "2026-09-18T00:00:00.000Z",
+      traceId: null,
+      latencyMs: null,
+    });
+
+  const txn = (over: Record<string, unknown> = {}) => ({
+    id: "TXIN1",
+    sender: STRANGER,
+    "confirmed-round": 600,
+    "round-time": 1_789_000_000,
+    "asset-transfer-transaction": {
+      "asset-id": Number(TESTNET.usdcAsaId),
+      amount: 55_000,
+      receiver: PAYER,
+    },
+    ...over,
+  });
+
+  const indexer = (byAddress: Record<string, unknown[]>): typeof fetch =>
+    (async (input: string | URL | Request) => {
+      const url = String(input);
+      const key = Object.keys(byAddress).find((a) => url.includes(a));
+      return Response.json({ transactions: key ? byAddress[key] : [] });
+    }) as unknown as typeof fetch;
+
+  const listener = (fetchImpl: typeof fetch) =>
+    new SettlementListener(TESTNET, store, MERCHANT, "/v1/orchestrate", PAYER, fetchImpl);
+
+  it("classifies money from a service we paid as a refund", async () => {
+    // Observed live: a service takes 0.06, does the work, and returns 0.055 of it.
+    paid("TXOUT1", STRANGER);
+    await listener(indexer({ [PAYER]: [txn()] })).poll();
+
+    const rows = store.inflows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "refund", amountBase: 55_000, fromAddress: STRANGER });
+  });
+
+  it("classifies money from a stranger as funding, not a refund", async () => {
+    // A faucet top-up does not reduce what a call cost.
+    await listener(indexer({ [PAYER]: [txn({ sender: "FAUCETADDRESS" })] })).poll();
+    expect(store.inflows()[0]!.kind).toBe("funding");
+  });
+
+  it("subtracts refunds from spend but not funding", async () => {
+    paid("TXOUT1", STRANGER, 60_000);
+    await listener(
+      indexer({
+        [PAYER]: [
+          txn({ id: "REFUND", sender: STRANGER }),
+          txn({ id: "TOPUP", sender: "FAUCETADDRESS", "asset-transfer-transaction": {
+            "asset-id": Number(TESTNET.usdcAsaId), amount: 20_000_000, receiver: PAYER } }),
+        ],
+      }),
+    ).poll();
+
+    const stats = store.stats();
+    expect(stats.outboundBase).toBe(60_000);
+    expect(stats.refundBase).toBe(55_000);
+    // What the call actually cost, which is the number that matters.
+    expect(stats.netOutboundBase).toBe(5_000);
+  });
+
+  it("is idempotent, so repeated polls do not double-count a refund", async () => {
+    paid("TXOUT1", STRANGER);
+    const l = listener(indexer({ [PAYER]: [txn()] }));
+    await l.poll();
+    await l.poll();
+    expect(store.inflows()).toHaveLength(1);
+    expect(store.stats().refundBase).toBe(55_000);
+  });
+
+  it("does not treat our own spending as an inflow", async () => {
+    await listener(
+      indexer({
+        [PAYER]: [
+          txn({ id: "OURS", sender: PAYER, "asset-transfer-transaction": {
+            "asset-id": Number(TESTNET.usdcAsaId), amount: 5_000, receiver: STRANGER } }),
+        ],
+      }),
+    ).poll();
+    expect(store.inflows()).toHaveLength(0);
+  });
+
+  it("flags an on-chain inflow that has no record", async () => {
+    // This is the case the suite used to miss entirely, while reporting clean.
+    const report = await new Reconciler(
+      TESTNET,
+      store,
+      MERCHANT,
+      PAYER,
+      indexerReturning({
+        [PAYER]: [
+          transfer({ txId: "UNRECORDED", sender: STRANGER, receiver: PAYER, amountBase: 55_000 }),
+        ],
+      }),
+    ).run();
+
+    expect(report.clean).toBe(false);
+    expect(report.discrepancies[0]).toMatchObject({
+      kind: "missing_receipt",
+      txId: "UNRECORDED",
+    });
+    expect(report.discrepancies[0]!.detail).toMatch(/inflow/);
+  });
+
+  it("matches a recorded inflow against the chain", async () => {
+    store.putInflow({
+      txId: "REFUND1",
+      fromAddress: STRANGER,
+      amountBase: 55_000,
+      assetId: TESTNET.usdcAsaId,
+      network: "testnet",
+      kind: "refund",
+      confirmedRound: 600,
+      receivedAt: "2026-09-18T00:00:00.000Z",
+    });
+
+    const report = await new Reconciler(
+      TESTNET,
+      store,
+      MERCHANT,
+      PAYER,
+      indexerReturning({
+        [PAYER]: [
+          transfer({ txId: "REFUND1", sender: STRANGER, receiver: PAYER, amountBase: 55_000 }),
+        ],
+      }),
+    ).run();
+
+    expect(report.clean).toBe(true);
+    expect(report.matched).toBe(1);
+  });
+
+  it("flags an inflow recorded for the wrong amount", async () => {
+    store.putInflow({
+      txId: "REFUND1",
+      fromAddress: STRANGER,
+      amountBase: 1,
+      assetId: TESTNET.usdcAsaId,
+      network: "testnet",
+      kind: "refund",
+      confirmedRound: 600,
+      receivedAt: "2026-09-18T00:00:00.000Z",
+    });
+
+    const report = await new Reconciler(
+      TESTNET,
+      store,
+      MERCHANT,
+      PAYER,
+      indexerReturning({
+        [PAYER]: [
+          transfer({ txId: "REFUND1", sender: STRANGER, receiver: PAYER, amountBase: 55_000 }),
+        ],
+      }),
+    ).run();
+
+    expect(report.discrepancies[0]!.kind).toBe("amount_mismatch");
+  });
+});

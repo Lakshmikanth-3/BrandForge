@@ -15,6 +15,13 @@
  *
  * The indexer is the authority here, never the store. Comparing the store against
  * itself would prove nothing.
+ *
+ * This suite reported clean while six real transfers to our addresses had no record,
+ * because it only examined money we SENT from the payer. A service refunded 0.275 USDC
+ * of the 0.44 we had paid it, and the books overstated spend by more than half while
+ * every assertion passed. Inflows to the payer are now part of the comparison, which is
+ * what the stated property -- every on-chain transfer touching our addresses has a
+ * record -- actually requires.
  */
 import type { NetworkConfig } from "@sentry402/shared";
 import type { Direction, Store } from "./db.js";
@@ -168,6 +175,12 @@ export class Reconciler {
 
     const receipts = this.store.receipts({ limit: 500 });
     const byTxId = new Map(receipts.map((r) => [r.txId, r]));
+    const inflowsByTxId = new Map(this.store.inflows(500).map((i) => [i.txId, i]));
+
+    // Money arriving at the payer: refunds from services we paid, and funding.
+    const payerInflows = (outbound as ChainTransfer[]).filter(
+      (t) => t.receiver === this.payerAddress && t.sender !== this.payerAddress,
+    );
 
     const discrepancies: Discrepancy[] = [];
     let matched = 0;
@@ -216,6 +229,36 @@ export class Reconciler {
       matched += 1;
     }
 
+    // Direction one and a half: money that came back to us.
+    for (const transfer of payerInflows) {
+      const recorded = inflowsByTxId.get(transfer.txId);
+      if (!recorded) {
+        discrepancies.push({
+          kind: "missing_receipt",
+          txId: transfer.txId,
+          detail:
+            `on-chain inflow of ${(transfer.amountBase / 1e6).toFixed(6)} USDC to the ` +
+            `payer in round ${transfer.confirmedRound} has no record`,
+          chainAmountBase: transfer.amountBase,
+          receiptAmountBase: null,
+        });
+        continue;
+      }
+      if (recorded.amountBase !== transfer.amountBase) {
+        discrepancies.push({
+          kind: "amount_mismatch",
+          txId: transfer.txId,
+          detail:
+            `inflow record says ${(recorded.amountBase / 1e6).toFixed(6)} USDC, ` +
+            `chain says ${(transfer.amountBase / 1e6).toFixed(6)}`,
+          chainAmountBase: transfer.amountBase,
+          receiptAmountBase: recorded.amountBase,
+        });
+        continue;
+      }
+      matched += 1;
+    }
+
     // Direction two: a receipt with nothing behind it.
     for (const receipt of receipts) {
       if (chain.has(receipt.txId)) continue;
@@ -238,8 +281,8 @@ export class Reconciler {
       network: this.net.name,
       checkedAt,
       fromRound,
-      chainTransfers: chain.size,
-      receipts: receipts.length,
+      chainTransfers: chain.size + payerInflows.length,
+      receipts: receipts.length + inflowsByTxId.size,
       matched,
       discrepancies,
       clean: discrepancies.length === 0,

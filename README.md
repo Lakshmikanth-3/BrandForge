@@ -70,8 +70,10 @@ Real settled payments, not fixtures. Reproduce with `npm run reconcile`.
 | | |
 | --- | --- |
 | Bridged calls paid | 36 |
-| USDC settled outbound | 0.440000 |
-| Reconciliation | 36 on-chain transfers, 36 receipts, 36 matched, clean |
+| USDC sent downstream | 0.440000 |
+| USDC refunded by services | 0.275000 |
+| **Net cost of 36 paid calls** | **0.165000** |
+| Reconciliation | 42 on-chain transfers, 42 records, 42 matched, clean |
 | Services with a real trust score | 5 of 6 |
 
 ```
@@ -93,6 +95,11 @@ Three things operating taught us that testing could not:
 - **A refusal must not be permanent.** Refusing a service stops the observations that
   would clear it. The gate now has a half-open state, because without one, a service
   we wronged could never recover.
+- **Money comes back.** One service takes $0.06, does the work and returns $0.055 of it.
+  Reconciliation reported clean while six real transfers to our addresses had no record,
+  because it only examined money we sent — so the books overstated spend by more than
+  half. Refunds are now classified apart from funding, and net cost closes exactly
+  against the on-chain balance.
 
 ## MainNet evidence
 

@@ -51,6 +51,9 @@ export interface Stats {
   distinctPayers: number;
   outboundCount: number;
   outboundUsdc: number;
+  refundUsdc: number;
+  /** Gross minus refunds: what the calls actually cost. */
+  netOutboundUsdc: number;
   firstSettledAt: string | null;
   lastSettledAt: string | null;
   network: string;

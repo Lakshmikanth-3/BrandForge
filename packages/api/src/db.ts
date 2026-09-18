@@ -54,7 +54,12 @@ export interface Stats {
   totalBase: number;
   distinctPayers: number;
   outboundCount: number;
+  /** Gross USDC sent downstream. */
   outboundBase: number;
+  /** USDC returned by services we paid. */
+  refundBase: number;
+  /** What the calls actually cost: gross minus refunds. */
+  netOutboundBase: number;
   firstSettledAt: string | null;
   lastSettledAt: string | null;
 }
@@ -121,6 +126,27 @@ CREATE TABLE IF NOT EXISTS services (
   probed_at         TEXT
 );
 CREATE INDEX IF NOT EXISTS services_allowlisted ON services (allowlisted, active);
+
+-- USDC arriving at the PAYER address. Kept separate from receipts rather than added
+-- as another direction, because the receipts CHECK constraint cannot be widened in
+-- place and because these are not settlements of our routes.
+--
+-- Two kinds, and the distinction matters. A refund is money returned by a service we
+-- paid, which reduces what a call actually cost us. Funding is a top-up from a faucet
+-- or a wallet, which does not. Reconciliation was reporting clean while six real
+-- transfers to our addresses had no row here at all, and a service refunding 0.275 USDC
+-- made our books overstate spend by more than half.
+CREATE TABLE IF NOT EXISTS inflows (
+  tx_id           TEXT PRIMARY KEY,
+  from_address    TEXT NOT NULL,
+  amount_base     INTEGER NOT NULL,
+  asset_id        TEXT NOT NULL,
+  network         TEXT NOT NULL,
+  kind            TEXT NOT NULL CHECK (kind IN ('refund','funding')),
+  confirmed_round INTEGER,
+  received_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inflows_received_at ON inflows (received_at DESC);
 
 -- Raw observations the trust engine scores. Append-only: a score is only as
 -- trustworthy as the record it derives from, so outcomes are never rewritten.
@@ -294,13 +320,22 @@ export class Store {
            FROM receipts WHERE direction = 'out'`,
       )
       .get() as Record<string, unknown>;
+    const refunds = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(amount_base),0) AS total FROM inflows WHERE kind = 'refund'`,
+      )
+      .get() as Record<string, unknown>;
+    const outboundBase = Number(outbound["total"] ?? 0);
+    const refundBase = Number(refunds["total"] ?? 0);
 
     return {
       settleCount: Number(inbound["n"] ?? 0),
       totalBase: Number(inbound["total"] ?? 0),
       distinctPayers: Number(inbound["payers"] ?? 0),
       outboundCount: Number(outbound["n"] ?? 0),
-      outboundBase: Number(outbound["total"] ?? 0),
+      outboundBase,
+      refundBase,
+      netOutboundBase: outboundBase - refundBase,
       firstSettledAt: (inbound["first"] as string | null) ?? null,
       lastSettledAt: (inbound["last"] as string | null) ?? null,
     };
@@ -581,6 +616,65 @@ export class Store {
       chosenScore: r["chosen_score"] === null ? null : Number(r["chosen_score"]),
       reason: String(r["reason"]),
     }));
+  }
+
+  /**
+   * Records USDC arriving at the payer. Idempotent by transaction id.
+   *
+   * `kind` is decided by the caller, which knows whether we have ever paid the sender.
+   */
+  putInflow(i: {
+    txId: string;
+    fromAddress: string;
+    amountBase: number;
+    assetId: string;
+    network: string;
+    kind: "refund" | "funding";
+    confirmedRound: number | null;
+    receivedAt: string;
+  }): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO inflows
+           (tx_id, from_address, amount_base, asset_id, network, kind, confirmed_round, received_at)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT (tx_id) DO NOTHING`,
+      )
+      .run(
+        i.txId,
+        i.fromAddress,
+        i.amountBase,
+        i.assetId,
+        i.network,
+        i.kind,
+        i.confirmedRound,
+        i.receivedAt,
+      );
+    return Number(result.changes) > 0;
+  }
+
+  inflows(limit = 100) {
+    const rows = this.db
+      .prepare(`SELECT * FROM inflows ORDER BY received_at DESC LIMIT ?`)
+      .all(Math.min(limit, 500)) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      txId: String(r["tx_id"]),
+      fromAddress: String(r["from_address"]),
+      amountBase: Number(r["amount_base"]),
+      assetId: String(r["asset_id"]),
+      network: String(r["network"]),
+      kind: String(r["kind"]) as "refund" | "funding",
+      confirmedRound: r["confirmed_round"] === null ? null : Number(r["confirmed_round"]),
+      receivedAt: String(r["received_at"]),
+    }));
+  }
+
+  /** True when we have ever paid this address, which makes money back a refund. */
+  hasPaid(address: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS found FROM receipts WHERE direction = 'out' AND payee = ? LIMIT 1`)
+      .get(address) as Record<string, unknown> | undefined;
+    return row !== undefined;
   }
 
   getSetting(key: string): string | null {

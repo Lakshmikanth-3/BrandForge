@@ -21,7 +21,11 @@
 import type { NetworkConfig } from "@sentry402/shared";
 import type { Store } from "./db.js";
 
-const CURSOR_KEYS = { in: "inbound_min_round", out: "outbound_min_round" } as const;
+const CURSOR_KEYS = {
+  in: "inbound_min_round",
+  out: "outbound_min_round",
+  inflow: "inflow_min_round",
+} as const;
 
 interface IndexerTxn {
   id: string;
@@ -55,7 +59,7 @@ export class SettlementListener {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  /** One pass over both directions. */
+  /** One pass over all three directions. */
   async poll(): Promise<ListenerResult> {
     const inbound = await this.scan("in");
     if (inbound.error) return inbound;
@@ -68,15 +72,31 @@ export class SettlementListener {
       return { ...inbound, error: outbound.error };
     }
 
+    // Money arriving at the payer. Ignoring it made the books overstate spend: one
+    // service refunded 0.275 USDC of the 0.44 we had sent, and reconciliation called
+    // that clean because it only ever looked at what we sent.
+    const inflow = await this.scan("inflow");
+
     return {
-      scanned: inbound.scanned + outbound.scanned,
-      written: inbound.written + outbound.written,
-      latestRound: Math.max(inbound.latestRound ?? 0, outbound.latestRound ?? 0) || null,
+      scanned: inbound.scanned + outbound.scanned + inflow.scanned,
+      written: inbound.written + outbound.written + inflow.written,
+      latestRound:
+        Math.max(
+          inbound.latestRound ?? 0,
+          outbound.latestRound ?? 0,
+          inflow.latestRound ?? 0,
+        ) || null,
+      ...(inflow.error ? { error: inflow.error } : {}),
     };
   }
 
-  /** One direction. `in` is USDC arriving at the merchant, `out` is the payer spending. */
-  private async scan(direction: "in" | "out"): Promise<ListenerResult> {
+  /**
+   * One direction.
+   *   in     — USDC arriving at the merchant, a settlement of one of our routes
+   *   out    — the payer spending downstream
+   *   inflow — USDC arriving at the payer: a refund from a service we paid, or funding
+   */
+  private async scan(direction: "in" | "out" | "inflow"): Promise<ListenerResult> {
     const address = direction === "in" ? this.merchantAddress : (this.payerAddress as string);
     const cursorKey = CURSOR_KEYS[direction];
     const cursor = this.store.getCursor(cursorKey);
@@ -123,9 +143,32 @@ export class SettlementListener {
         // Paying ourselves is money received, and the inbound scan already has it.
         if (transfer.receiver === this.merchantAddress) continue;
       }
+      if (direction === "inflow") {
+        if (transfer.receiver !== this.payerAddress) continue;
+        // Our own spending is the outbound scan's business, not this one's.
+        if (txn.sender === this.payerAddress) continue;
+      }
 
       const round = Number(txn["confirmed-round"]);
       maxRound = Math.max(maxRound, round);
+
+      if (direction === "inflow") {
+        // A sender we have paid is refunding us; anyone else is funding us. The
+        // distinction decides whether this reduces what a call cost.
+        const kind = this.store.hasPaid(txn.sender) ? "refund" : "funding";
+        const added = this.store.putInflow({
+          txId: txn.id,
+          fromAddress: txn.sender,
+          amountBase: transfer.amount,
+          assetId: this.net.usdcAsaId,
+          network: this.net.name,
+          kind,
+          confirmedRound: round,
+          receivedAt: new Date(Number(txn["round-time"]) * 1000).toISOString(),
+        });
+        if (added) written += 1;
+        continue;
+      }
 
       const inserted = this.store.putReceipt({
         txId: txn.id,

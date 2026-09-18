@@ -49,6 +49,10 @@ export function apiRoutes(
       ...s,
       totalUsdc: s.totalBase / 1e6,
       outboundUsdc: s.outboundBase / 1e6,
+      refundUsdc: s.refundBase / 1e6,
+      // What the calls actually cost. Gross overstated spend by more than half once a
+      // service started refunding the unused portion of its ceiling.
+      netOutboundUsdc: s.netOutboundBase / 1e6,
       network: config.network.name,
       merchantAddress: config.merchantAddress,
     });
