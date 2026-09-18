@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Store } from "./db.js";
 import {
+  DEFAULT_POLICY,
   MIN_OBSERVATIONS,
   TrustEngine,
   computeRecord,
@@ -197,9 +198,14 @@ describe("TrustEngine gate", () => {
   let store: Store;
   let engine: TrustEngine;
 
+  // The fixtures are dated, so the clock is pinned just after them. Against a real
+  // clock these records would be old enough for parole, which is correct behaviour
+  // but not what these tests are about.
+  const FIXTURE_NOW = Date.parse("2026-09-18T00:01:00.000Z");
+
   beforeEach(() => {
     store = new Store(":memory:");
-    engine = new TrustEngine(store);
+    engine = new TrustEngine(store, DEFAULT_POLICY, () => FIXTURE_NOW);
   });
 
   const feed = (url: string, outcomes: Outcome[]) => {
@@ -240,13 +246,17 @@ describe("TrustEngine gate", () => {
     expect(engine.gate(URL_A).record.verdict).toBe("warn");
     expect(engine.gate(URL_A).allow).toBe(true);
 
-    const strict = new TrustEngine(store, { refuseBelow: 0.8, warnBelow: 0.95 });
+    const strict = new TrustEngine(
+      store,
+      { refuseBelow: 0.8, warnBelow: 0.95 },
+      () => FIXTURE_NOW,
+    );
     expect(strict.gate(URL_A).allow).toBe(false);
   });
 
   it("persists outcomes so a restart does not lose the record", () => {
     feed(URL_A, many(10));
-    const revived = new TrustEngine(store);
+    const revived = new TrustEngine(store, DEFAULT_POLICY, () => FIXTURE_NOW);
     expect(revived.recordFor(URL_A).observations).toBe(10);
   });
 });
@@ -371,5 +381,97 @@ describe("our own bad requests are not the service's failure", () => {
     // Unrated, so allowed: we have learned nothing about this endpoint.
     expect(engine.gate(URL_A).allow).toBe(true);
     expect(engine.gate(URL_A).record.verdict).toBe("unrated");
+  });
+});
+
+describe("a refusal must not be permanent", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+  });
+
+  /** Poisons a record, with the newest observation at `lastSeen`. */
+  const poison = (engine: TrustEngine, url: string, lastSeen: string) => {
+    for (let i = 0; i < 20; i += 1) {
+      engine.record({
+        resourceUrl: url,
+        at: new Date(Date.parse(lastSeen) - i * 1_000).toISOString(),
+        ok: false,
+        httpStatus: 200,
+        latencyMs: 300,
+        settled: true,
+        schemaOk: null,
+        coldStart: false,
+        failureReason: "took payment, returned nothing",
+      });
+    }
+  };
+
+  const NOW = Date.parse("2026-09-19T12:00:00.000Z");
+
+  it("refuses a freshly failing service", () => {
+    const engine = new TrustEngine(store, DEFAULT_POLICY, () => NOW);
+    poison(engine, URL_A, "2026-09-19T11:59:00.000Z"); // one minute ago
+    const gate = engine.gate(URL_A);
+    expect(gate.allow).toBe(false);
+    expect(gate.record.onParole).toBeUndefined();
+  });
+
+  it("allows one probationary call once the cooldown has elapsed", () => {
+    // Without this a refusal is permanent by construction: refusing prevents the
+    // observations that would clear it, so the score can never move.
+    const engine = new TrustEngine(store, DEFAULT_POLICY, () => NOW);
+    poison(engine, URL_A, "2026-09-19T11:40:00.000Z"); // twenty minutes ago
+    const gate = engine.gate(URL_A);
+    expect(gate.allow).toBe(true);
+    expect(gate.record.onParole).toBe(true);
+    expect(gate.reason).toMatch(/probationary/);
+  });
+
+  it("holds the line right up to the cooldown boundary", () => {
+    const engine = new TrustEngine(store, DEFAULT_POLICY, () => NOW, 15 * 60 * 1000);
+    poison(engine, URL_A, new Date(NOW - 15 * 60 * 1000 + 1_000).toISOString());
+    expect(engine.gate(URL_A).allow).toBe(false);
+
+    const later = new TrustEngine(store, DEFAULT_POLICY, () => NOW + 2_000, 15 * 60 * 1000);
+    expect(later.gate(URL_A).allow).toBe(true);
+  });
+
+  it("lets a paroled service actually recover", () => {
+    // The end of the story: probation, then good calls, then a passing score.
+    const engine = new TrustEngine(store, DEFAULT_POLICY, () => NOW);
+    poison(engine, URL_A, "2026-09-19T11:00:00.000Z");
+    expect(engine.gate(URL_A).allow).toBe(true);
+
+    for (let i = 0; i < 30; i += 1) {
+      engine.record({
+        resourceUrl: URL_A,
+        at: new Date(NOW + i * 1_000).toISOString(),
+        ok: true,
+        httpStatus: 200,
+        latencyMs: 300,
+        settled: true,
+        schemaOk: null,
+        coldStart: false,
+        failureReason: null,
+      });
+    }
+
+    const recovered = engine.gate(URL_A);
+    expect(recovered.record.verdict).toBe("pass");
+    expect(recovered.record.onParole).toBeUndefined();
+  });
+
+  it("does not mark a passing service as on parole", () => {
+    const engine = new TrustEngine(store, DEFAULT_POLICY, () => NOW);
+    for (const o of many(20)) engine.record({ ...o, resourceUrl: URL_B });
+    expect(engine.gate(URL_B).record.onParole).toBeUndefined();
+  });
+
+  it("paroles a record with no observation timestamp rather than trapping it", () => {
+    const engine = new TrustEngine(store, DEFAULT_POLICY, () => NOW);
+    // Nothing recorded at all is unrated, which is already allowed.
+    expect(engine.gate("https://never-seen.test/x").allow).toBe(true);
   });
 });

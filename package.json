@@ -25,7 +25,8 @@
     "reconcile": "tsx scripts/reconcile.ts",
     "test:web": "npm run test -w @sentry402/web",
     "accounts:optin": "tsx scripts/optin-accounts.ts",
-    "prober": "tsx scripts/prober.ts"
+    "prober": "tsx scripts/prober.ts",
+    "receipts:sync": "tsx scripts/sync-receipts.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

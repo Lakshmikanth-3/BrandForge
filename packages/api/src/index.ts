@@ -18,6 +18,7 @@ export {
   isAllowlisted,
   probeService,
   samplePayloadFor,
+  fillPlaceholders,
 } from "./catalog.js";
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";

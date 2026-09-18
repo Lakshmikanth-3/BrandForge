@@ -3,6 +3,7 @@ import { TESTNET, MAINNET } from "@sentry402/shared";
 import { Store } from "./db.js";
 import {
   CURATED,
+  fillPlaceholders,
   isAllowlisted,
   normaliseEntry,
   parseChallenge,
@@ -338,5 +339,58 @@ describe("service registry", () => {
     });
     store.upsertService(entry("https://a.test/x"), true);
     expect(store.services()[0]!.probeVerdict).toBe("ok");
+  });
+});
+
+describe("fillPlaceholders", () => {
+  it("fills a sha256 token to the right length", () => {
+    // A published example is a template. One service publishes
+    // {"hash":"<sha256-hex-64-chars>"} and answers 400 when sent that literally.
+    const filled = fillPlaceholders({ hash: "<sha256-hex-64-chars>" }) as { hash: string };
+    expect(filled.hash).toHaveLength(64);
+    expect(filled.hash).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it("does not read the 256 in sha256 as a character count", () => {
+    // An earlier version produced a 128-character hash from exactly this token.
+    const filled = fillPlaceholders({ h: "<sha256>" }) as { h: string };
+    expect(filled.h).toHaveLength(64);
+  });
+
+  it("honours an explicit character count", () => {
+    expect((fillPlaceholders({ h: "<hex-16-chars>" }) as { h: string }).h).toHaveLength(16);
+  });
+
+  it("clamps an absurd length rather than allocating it", () => {
+    expect(
+      (fillPlaceholders({ h: "<hex-999999-chars>" }) as { h: string }).h.length,
+    ).toBeLessThanOrEqual(128);
+  });
+
+  it("leaves real values untouched", () => {
+    const input = { a: "real value", n: 5, b: true, nested: { url: "https://x.test/y" } };
+    expect(fillPlaceholders(input)).toEqual(input);
+  });
+
+  it("only substitutes angle-bracket tokens", () => {
+    expect((fillPlaceholders({ a: "sha256" }) as { a: string }).a).toBe("sha256");
+  });
+
+  it("recurses through objects and arrays", () => {
+    const filled = fillPlaceholders({
+      items: [{ url: "<url>" }, { addr: "<address>" }],
+    }) as { items: [{ url: string }, { addr: string }] };
+    expect(filled.items[0].url).toMatch(/^https:\/\//);
+    expect(filled.items[1].addr).toHaveLength(58);
+  });
+
+  it("falls back to a neutral string for an unknown token", () => {
+    // Guessing cleverly at unknown input is worse than a value the service can reject.
+    expect((fillPlaceholders({ x: "<something-odd>" }) as { x: string }).x).toBe("sentry402");
+  });
+
+  it("passes null and undefined through", () => {
+    expect(fillPlaceholders(null)).toBeNull();
+    expect(fillPlaceholders(undefined)).toBeUndefined();
   });
 });

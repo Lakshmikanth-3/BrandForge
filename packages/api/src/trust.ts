@@ -23,6 +23,13 @@
  *     a POST endpoint an empty body earned a 400 from a service that works fine;
  *     scoring that against it would have made the record measure our bugs. Those
  *     outcomes are excluded from the window and counted separately.
+ *  5. A refusal must not be permanent. Refusing a service stops new observations,
+ *     which freezes its score, which keeps it refused: without a way back, one bad
+ *     run condemns an endpoint forever. That is exactly what happened -- a service
+ *     was driven to 0.44 by our own malformed requests and could never recover,
+ *     because the gate prevented the very calls that would have cleared it. So the
+ *     gate is a circuit breaker with a half-open state: after a cooldown, a refused
+ *     service gets one probationary call to earn its way back.
  */
 import type { Store } from "./db.js";
 
@@ -51,6 +58,8 @@ export type Verdict = "pass" | "warn" | "refuse" | "unrated";
 
 export interface TrustRecord {
   resourceUrl: string;
+  /** True when a refused service is being allowed one probationary call. */
+  onParole?: boolean;
   /** Null when unrated. Never a fabricated number. */
   score: number | null;
   verdict: Verdict;
@@ -82,6 +91,14 @@ export interface TrustPolicy {
 }
 
 export const DEFAULT_POLICY: TrustPolicy = { refuseBelow: 0.6, warnBelow: 0.8 };
+
+/**
+ * How long a refused service waits before it is allowed one probationary call.
+ *
+ * Long enough that a genuinely broken endpoint is not paid repeatedly, short enough
+ * that a service which was fixed, or which we wronged, is not stuck for a day.
+ */
+export const PAROLE_COOLDOWN_MS = 15 * 60 * 1000;
 
 /**
  * Latency reference point. A service answering in under this is not penalised;
@@ -222,6 +239,8 @@ export class TrustEngine {
   constructor(
     private readonly store: Store,
     private readonly policy: TrustPolicy = DEFAULT_POLICY,
+    private readonly now: () => number = Date.now,
+    private readonly paroleCooldownMs: number = PAROLE_COOLDOWN_MS,
   ) {}
 
   get currentPolicy(): TrustPolicy {
@@ -247,6 +266,20 @@ export class TrustEngine {
     const record = this.recordFor(resourceUrl);
 
     if (record.verdict === "refuse") {
+      // Half-open: after the cooldown, one call is allowed so the service can earn
+      // its way back. Without this a refusal is permanent by construction, because
+      // refusing prevents the observations that would clear it.
+      if (this.paroleDue(record)) {
+        return {
+          allow: true,
+          record: { ...record, onParole: true },
+          reason:
+            `probationary call: score ${record.score?.toFixed(2)} is below the ` +
+            `${this.policy.refuseBelow} threshold, but the cooldown has elapsed so the ` +
+            `service gets one chance to recover`,
+        };
+      }
+
       return {
         allow: false,
         record,
@@ -269,6 +302,14 @@ export class TrustEngine {
     }
 
     return { allow: true, record, reason: `trust score ${record.score?.toFixed(2)}` };
+  }
+
+  /** True when a refused service has waited out its cooldown. */
+  private paroleDue(record: TrustRecord): boolean {
+    if (record.lastSeenAt === null) return true;
+    const lastSeen = Date.parse(record.lastSeenAt);
+    if (Number.isNaN(lastSeen)) return true;
+    return this.now() - lastSeen >= this.paroleCooldownMs;
   }
 
   /**

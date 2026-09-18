@@ -337,7 +337,47 @@ const CURATED_URLS = new Set(CURATED.map((c) => c.url));
  */
 export function samplePayloadFor(store: Store, url: string): unknown {
   const row = store.services({ activeOnly: false }).find((s) => s.resourceUrl === url);
-  return row?.discoveryInput ?? null;
+  return row?.discoveryInput === undefined ? null : fillPlaceholders(row.discoveryInput);
+}
+
+/**
+ * Fills the placeholder tokens a published input example uses.
+ *
+ * Discovery examples are templates, not literals: one service publishes
+ * `{"hash": "<sha256-hex-64-chars>"}` and then answers 400 when sent that string
+ * verbatim, which is correct of it. Sending the template unfilled produced failures
+ * that looked like the service breaking, so this substitutes a value of the shape the
+ * placeholder names.
+ *
+ * Only angle-bracket tokens are touched, and anything unrecognised becomes a short
+ * neutral string rather than being guessed at cleverly. A service that needs genuinely
+ * meaningful input will still refuse, and that refusal is attributed to us.
+ */
+export function fillPlaceholders(value: unknown): unknown {
+  if (typeof value === "string") return fillToken(value);
+  if (Array.isArray(value)) return value.map(fillPlaceholders);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, fillPlaceholders(v)]),
+    );
+  }
+  return value;
+}
+
+function fillToken(value: string): string {
+  if (!/^<.*>$/.test(value.trim())) return value;
+  const token = value.trim().toLowerCase();
+
+  if (token.includes("sha256") || token.includes("hex")) {
+    // Match a length only when it is explicitly a character count. An earlier
+    // version matched the 256 in "sha256" and produced a 128-character hash.
+    const explicit = /(\d+)\s*-?\s*chars?/.exec(token);
+    const length = explicit ? Number(explicit[1]) : token.includes("sha256") ? 64 : 32;
+    return "a".repeat(Math.min(Math.max(length, 8), 128));
+  }
+  if (token.includes("url")) return "https://example.com/resource";
+  if (token.includes("address")) return "ZMFK2OI7ZBD2U27ISERZC4S6LKM6WMFJPZQ4MYNJDZ2VNBNMBA67RA22AA";
+  return "sentry402";
 }
 
 export function isAllowlisted(resourceUrl: string): boolean {
