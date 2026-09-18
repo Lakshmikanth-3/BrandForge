@@ -16,6 +16,7 @@ export { CatalogIngester, CURATED, isAllowlisted, probeService } from "./catalog
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";
 export { PRICES, ROUTE_PATHS } from "./x402.js";
+export { TtlCache, RateLimiter, TRUST_CACHE_TTL_MS } from "./trustcache.js";
 export {
   mountInjectRoutes,
   injectUrl,

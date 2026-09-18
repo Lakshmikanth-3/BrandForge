@@ -12,6 +12,7 @@ import type { BudgetGuard } from "./budget.js";
 import type { DownstreamPayer } from "./payer.js";
 import type { TrustEngine } from "./trust.js";
 import { CURATED } from "./catalog.js";
+import { RateLimiter } from "./trustcache.js";
 
 export function apiRoutes(
   config: AppConfig,
@@ -22,6 +23,10 @@ export function apiRoutes(
   payer: DownstreamPayer | null,
 ): Hono {
   const api = new Hono();
+
+  // The free lookup is what the UI and a curious judge use. Payment limits the paid
+  // route; nothing limits a free one, so this does.
+  const lookupLimiter = new RateLimiter();
 
   /** Static shape of the flow, so the UI can render the pipeline before traffic. */
   api.get("/flow", (c) =>
@@ -99,6 +104,25 @@ export function apiRoutes(
   api.get("/trust", (c) => {
     const url = c.req.query("url");
     if (!url) return c.json({ error: "url query parameter required" }, 400);
+
+    const key =
+      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+      c.req.header("x-real-ip") ??
+      "unknown";
+    const verdict = lookupLimiter.check(key);
+    if (!verdict.allowed) {
+      c.header("retry-after", String(verdict.retryAfterSec));
+      return c.json(
+        {
+          error: "rate limited",
+          retryAfterSec: verdict.retryAfterSec,
+          hint: "The paid route at /v1/trust is not rate limited.",
+        },
+        429,
+      );
+    }
+
+    // Identical to what /v1/trust sells and what the payment gate acts on.
     return c.json(trust.recordFor(url));
   });
 

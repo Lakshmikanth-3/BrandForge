@@ -14,6 +14,8 @@ import { BudgetGuard } from "./budget.js";
 import { DownstreamPayer } from "./payer.js";
 import { TrustEngine } from "./trust.js";
 import { INJECT_PREFIX, mountInjectRoutes } from "./inject.js";
+import { TtlCache } from "./trustcache.js";
+import type { TrustRecord } from "./trust.js";
 
 export interface DependencyStatus {
   readonly name: string;
@@ -84,8 +86,9 @@ export interface AppParts {
   payer: DownstreamPayer | null;
 }
 
-/** $0.05 in USDC base units. Kept as an integer; floats never hold money. */
-const ORCHESTRATE_PRICE_BASE = 50_000;
+/** Prices in USDC base units. Kept as integers; floats never hold money. */
+const ORCHESTRATE_PRICE_BASE = 50_000; // $0.05
+const TRUST_PRICE_BASE = 20_000; // $0.02
 
 export function createApp(config: AppConfig, storePath?: string): AppParts {
   const app = new Hono();
@@ -139,6 +142,32 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
   // the 402 it issues and the settlement it completes.
   app.use(`${ROUTE_PATHS.orchestrate}`, traceMiddleware(hub, store, config, ORCHESTRATE_PRICE_BASE));
   app.use(`${ROUTE_PATHS.orchestrate}`, x402Middleware(config));
+
+  // Paid trust lookup. Cached, because a score recomputed from unchanged outcomes
+  // is the same number and serving it twice from the database is waste.
+  const trustCache = new TtlCache<TrustRecord>();
+
+  app.use(
+    ROUTE_PATHS.trust,
+    traceMiddleware(hub, store, config, TRUST_PRICE_BASE),
+  );
+  app.use(ROUTE_PATHS.trust, x402Middleware(config));
+
+  app.get(ROUTE_PATHS.trust, (c) => {
+    const url = c.req.query("url");
+    if (!url) {
+      return c.json({ error: "url query parameter required" }, 400);
+    }
+
+    const cached = trustCache.get(url);
+    if (cached) return c.json({ ...cached, cached: true });
+
+    // The same call the payment gate makes. Selling a different number than the
+    // one we act on would make both worthless.
+    const record = trust.recordFor(url);
+    trustCache.set(url, record);
+    return c.json({ ...record, cached: false });
+  });
 
   // Phase 1 payload is a stub. Phase 3 replaces this body with the bridged call;
   // the payment path above does not change.

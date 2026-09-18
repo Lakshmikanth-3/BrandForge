@@ -56,6 +56,34 @@ export function buildResourceServer(config: AppConfig) {
  * Discovery metadata for the orchestration route. This is what an agent reads
  * from the Bazaar to know how to call us, so the example must be real shape.
  */
+const trustDiscovery = declareDiscoveryExtension({
+  input: { url: "https://api.example.com/resource" },
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: {
+        type: "string",
+        description: "The x402 endpoint whose reliability record you want",
+      },
+    },
+    required: ["url"],
+  },
+  output: {
+    example: {
+      resourceUrl: "https://api.example.com/resource",
+      score: 0.94,
+      verdict: "pass",
+      observations: 128,
+      successRate: 0.96,
+      paidNothingCount: 2,
+      medianLatencyMs: 410,
+      coldStartCount: 7,
+      lastSeenAt: "2026-09-18T00:00:00.000Z",
+      basis: "128 observations, recency-weighted over the last 50",
+    },
+  },
+});
+
 const orchestrateDiscovery = declareDiscoveryExtension({
   bodyType: "json",
   input: {
@@ -124,6 +152,30 @@ export function paidRoutes(config: AppConfig) {
         "account, no wallet in the agent.",
       mimeType: "application/json",
       extensions: orchestrateDiscovery,
+    },
+    "GET /v1/trust": {
+      accepts: [
+        {
+          scheme: "exact" as const,
+          price: PRICES.trust,
+          network: config.network.caip2 as `${string}:${string}`,
+          payTo: config.merchantAddress,
+          extra: {
+            asset: config.network.usdcAsaId,
+            tag: CHALLENGE_TAG,
+          },
+        },
+      ],
+      // This description IS the Bazaar listing for the trust product.
+      description:
+        "Reliability record for any x402 endpoint on Algorand, built from calls this " +
+        "bridge actually routed and paid for. Returns a composite score in [0,1], the " +
+        "observation count behind it, success rate, how often the endpoint took payment " +
+        "and returned nothing, median latency, and cold-start count. An endpoint with " +
+        "too few observations is reported as unrated rather than given a misleading " +
+        "number. Pass ?url= the endpoint you are about to pay.",
+      mimeType: "application/json",
+      extensions: trustDiscovery,
     },
   };
 }
