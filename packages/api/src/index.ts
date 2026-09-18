@@ -12,7 +12,13 @@ export { DownstreamPayer } from "./payer.js";
 export { TrustEngine, computeRecord, verdictFor, DEFAULT_POLICY, MIN_OBSERVATIONS } from "./trust.js";
 export type { Outcome, TrustRecord, Verdict, TrustPolicy } from "./trust.js";
 export type { PayOutcome } from "./payer.js";
-export { CatalogIngester, CURATED, isAllowlisted, probeService } from "./catalog.js";
+export {
+  CatalogIngester,
+  CURATED,
+  isAllowlisted,
+  probeService,
+  samplePayloadFor,
+} from "./catalog.js";
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";
 export { Reconciler, receiptsAsCsv } from "./reconcile.js";

@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS services (
   settle_count      INTEGER NOT NULL DEFAULT 0,
   last_seen         TEXT NOT NULL,
   has_discovery     INTEGER NOT NULL DEFAULT 0,
+  -- The input example the service publishes via discovery. Sending a service a
+  -- body it did not ask for produces a 4xx that looks like the service failing.
+  discovery_input   TEXT,
   allowlisted       INTEGER NOT NULL DEFAULT 0,
   active            INTEGER NOT NULL DEFAULT 1,
   first_ingested_at TEXT NOT NULL,
@@ -131,6 +134,9 @@ CREATE TABLE IF NOT EXISTS outcomes (
   settled        INTEGER NOT NULL,
   schema_ok      INTEGER,
   cold_start     INTEGER NOT NULL,
+  -- True when the call failed because OUR request was invalid. Excluded from
+  -- scoring: a service must not be marked unreliable for refusing our bad input.
+  client_error   INTEGER NOT NULL DEFAULT 0,
   failure_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS outcomes_url_at ON outcomes (resource_url, at DESC);
@@ -192,6 +198,8 @@ CREATE TABLE IF NOT EXISTS listener_state (
  */
 const MIGRATIONS: { table: string; column: string; definition: string }[] = [
   { table: "traces", column: "flow", definition: "TEXT NOT NULL DEFAULT 'inbound'" },
+  { table: "services", column: "discovery_input", definition: "TEXT" },
+  { table: "outcomes", column: "client_error", definition: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 export class Store {
@@ -367,6 +375,7 @@ export class Store {
       settleCount: number;
       lastSeen: string;
       hasDiscoveryInfo: boolean;
+      discoveryInput?: unknown;
     },
     allowlisted: boolean,
   ): void {
@@ -374,8 +383,9 @@ export class Store {
       .prepare(
         `INSERT INTO services
            (resource_url, method, description, pay_to, network, amount_base, asset_id,
-            settle_count, last_seen, has_discovery, allowlisted, active, first_ingested_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)
+            settle_count, last_seen, has_discovery, discovery_input, allowlisted, active,
+            first_ingested_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?)
          ON CONFLICT (resource_url) DO UPDATE SET
            method = excluded.method,
            description = excluded.description,
@@ -386,6 +396,7 @@ export class Store {
            settle_count = excluded.settle_count,
            last_seen = excluded.last_seen,
            has_discovery = excluded.has_discovery,
+           discovery_input = excluded.discovery_input,
            allowlisted = excluded.allowlisted,
            active = 1`,
       )
@@ -400,6 +411,9 @@ export class Store {
         e.settleCount,
         e.lastSeen,
         e.hasDiscoveryInfo ? 1 : 0,
+        e.discoveryInput === undefined || e.discoveryInput === null
+          ? null
+          : JSON.stringify(e.discoveryInput),
         allowlisted ? 1 : 0,
         new Date().toISOString(),
       );
@@ -482,14 +496,15 @@ export class Store {
     settled: boolean;
     schemaOk: boolean | null;
     coldStart: boolean;
+    clientError?: boolean;
     failureReason: string | null;
   }): void {
     this.db
       .prepare(
         `INSERT INTO outcomes
            (resource_url, at, ok, http_status, latency_ms, settled, schema_ok,
-            cold_start, failure_reason)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+            cold_start, client_error, failure_reason)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         o.resourceUrl,
@@ -500,6 +515,7 @@ export class Store {
         o.settled ? 1 : 0,
         o.schemaOk === null ? null : o.schemaOk ? 1 : 0,
         o.coldStart ? 1 : 0,
+        o.clientError ? 1 : 0,
         o.failureReason,
       );
   }
@@ -520,6 +536,7 @@ export class Store {
       settled: Number(r["settled"]) === 1,
       schemaOk: r["schema_ok"] === null ? null : Number(r["schema_ok"]) === 1,
       coldStart: Number(r["cold_start"]) === 1,
+      clientError: Number(r["client_error"] ?? 0) === 1,
       failureReason: r["failure_reason"] === null ? null : String(r["failure_reason"]),
     }));
   }
@@ -715,6 +732,8 @@ export interface ServiceRow {
   settleCount: number;
   lastSeen: string;
   hasDiscoveryInfo: boolean;
+  /** The body example the service publishes, or null when it publishes none. */
+  discoveryInput: unknown;
   allowlisted: boolean;
   active: boolean;
   probeVerdict: string | null;
@@ -741,6 +760,15 @@ function toService(r: Record<string, unknown>): ServiceRow {
     settleCount: Number(r["settle_count"]),
     lastSeen: String(r["last_seen"]),
     hasDiscoveryInfo: Number(r["has_discovery"]) === 1,
+    discoveryInput: (() => {
+      const raw = r["discovery_input"];
+      if (raw === null || raw === undefined) return null;
+      try {
+        return JSON.parse(String(raw));
+      } catch {
+        return null;
+      }
+    })(),
     allowlisted: Number(r["allowlisted"]) === 1,
     active: Number(r["active"]) === 1,
     probeVerdict: str("probe_verdict"),

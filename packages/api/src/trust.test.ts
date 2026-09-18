@@ -313,3 +313,63 @@ describe("TrustEngine route-around", () => {
     expect(log[0]).toMatchObject({ refusedUrl: URL_A, chosenUrl: URL_B });
   });
 });
+
+describe("our own bad requests are not the service's failure", () => {
+  it("excludes a client error from the window entirely", () => {
+    // Sending a POST endpoint an empty body earned a 400 from a service that works.
+    // Scoring that would make the record measure our bugs instead of their behaviour.
+    const record = computeRecord(URL_A, [
+      ...many(10, { ok: false, settled: false, clientError: true }),
+      ...many(10),
+    ]);
+    expect(record.observations).toBe(10);
+    expect(record.successRate).toBe(1);
+    expect(record.verdict).toBe("pass");
+  });
+
+  it("counts them separately so they are still visible", () => {
+    const record = computeRecord(URL_A, [
+      ...many(3, { ok: false, clientError: true }),
+      ...many(10),
+    ]);
+    expect(record.clientErrorCount).toBe(3);
+  });
+
+  it("can leave a service unrated when every call was our fault", () => {
+    // Ten calls we got wrong tell us nothing about the endpoint.
+    const record = computeRecord(URL_A, many(10, { ok: false, clientError: true }));
+    expect(record.observations).toBe(0);
+    expect(record.verdict).toBe("unrated");
+    expect(record.score).toBeNull();
+    expect(record.clientErrorCount).toBe(10);
+  });
+
+  it("does not let a client error mask a real failure", () => {
+    const record = computeRecord(URL_A, [
+      ...many(5, { ok: false, clientError: true }),
+      ...many(10, { ok: false, settled: true }),
+    ]);
+    // The real failures still score, and still refuse.
+    expect(record.observations).toBe(10);
+    expect(record.verdict).toBe("refuse");
+    expect(record.paidNothingCount).toBe(10);
+  });
+
+  it("treats an absent clientError flag as not-a-client-error", () => {
+    // Older rows predate the column and must keep their original meaning.
+    const record = computeRecord(URL_A, many(10, { ok: false, settled: true }));
+    expect(record.observations).toBe(10);
+    expect(record.clientErrorCount).toBe(0);
+  });
+
+  it("is not affected in the gate by client errors alone", () => {
+    const store = new Store(":memory:");
+    const engine = new TrustEngine(store);
+    for (const o of many(20, { ok: false, clientError: true })) {
+      engine.record({ ...o, resourceUrl: URL_A });
+    }
+    // Unrated, so allowed: we have learned nothing about this endpoint.
+    expect(engine.gate(URL_A).allow).toBe(true);
+    expect(engine.gate(URL_A).record.verdict).toBe("unrated");
+  });
+});

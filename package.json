@@ -24,7 +24,8 @@
     "catalog:ingest": "tsx scripts/ingest.ts",
     "reconcile": "tsx scripts/reconcile.ts",
     "test:web": "npm run test -w @sentry402/web",
-    "accounts:optin": "tsx scripts/optin-accounts.ts"
+    "accounts:optin": "tsx scripts/optin-accounts.ts",
+    "prober": "tsx scripts/prober.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

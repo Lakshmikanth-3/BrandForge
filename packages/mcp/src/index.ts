@@ -27,6 +27,7 @@ import {
   Store,
   TraceHub,
   TrustEngine,
+  samplePayloadFor,
   type CuratedService,
 } from "@sentry402/api";
 
@@ -105,7 +106,10 @@ for (const service of CURATED) {
         };
       }
 
-      const outcome = await payer.pay(service, amountBase, args.payload ?? null);
+      // Fall back to the input example the service publishes, so a tool called
+      // with no arguments still sends a body the endpoint will accept.
+      const payload = args.payload ?? samplePayloadFor(store, service.url);
+      const outcome = await payer.pay(service, amountBase, payload);
 
       if (!outcome.ok) {
         // An honest error, including a refusal by the budget guard.

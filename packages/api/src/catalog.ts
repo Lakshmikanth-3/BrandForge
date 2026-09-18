@@ -35,6 +35,8 @@ export interface CatalogEntry {
   settleCount: number;
   lastSeen: string;
   hasDiscoveryInfo: boolean;
+  /** The request body the service publishes as its input example, if any. */
+  discoveryInput: unknown;
 }
 
 export type ProbeVerdict =
@@ -61,7 +63,7 @@ interface RawItem {
   description?: string;
   settleCount?: number;
   lastSeen?: string;
-  discoveryInfo?: unknown;
+  discoveryInfo?: { input?: { body?: unknown; queryParams?: unknown } };
   accepts?: {
     scheme?: string;
     network?: string;
@@ -112,6 +114,7 @@ export function normaliseEntry(item: unknown, network: NetworkConfig): CatalogEn
     settleCount: Number(raw.settleCount ?? 0),
     lastSeen: typeof raw.lastSeen === "string" ? raw.lastSeen : new Date().toISOString(),
     hasDiscoveryInfo: raw.discoveryInfo !== undefined && raw.discoveryInfo !== null,
+    discoveryInput: raw.discoveryInfo?.input?.body ?? null,
   };
 }
 
@@ -258,13 +261,20 @@ export async function probeService(
  * advertising USDC on Algorand TestNet. Latency is the observed cold-path figure.
  *
  * Deliberately excluded despite answering 402:
- *  - prism-99h2.onrender.com — advertises MainNet only, so it is unpayable from
- *    a TestNet payer. The probe catches this as `wrong_network`.
+ *  - prism-99h2.onrender.com, inquvia, validex, captre, x402-mesh-gateway —
+ *    MainNet only, so unpayable from a TestNet payer. The probe reports
+ *    `wrong_network`.
  *  - algorandx402-joke.onrender.com — plain http, no TLS. Not sending payment
  *    material over an unencrypted hop, however cheap the call.
  *  - gateway-x402.vercel.app — every route drifted 4-5x from its catalog price.
- *    Kept out of the trusted set, but it is the natural fixture for the Phase 6
+ *    Kept out of the trusted set, but it is the natural fixture for the
  *    price-anomaly test.
+ *  - recourse-api, api.iomarkets.ai — listed in the catalog but answer 404.
+ *
+ * This list decays, and faster than expected. finality-x402-backend.onrender.com
+ * held three curated entries in the morning and had migrated to MainNet at $0.70 by
+ * the afternoon, which the probe caught as `wrong_network` rather than paying it.
+ * Re-running the ingest is maintenance, not setup.
  */
 export interface CuratedService {
   url: string;
@@ -290,22 +300,10 @@ export const CURATED: readonly CuratedService[] = [
     summary: "Gross protocol fees earned by Tinyman over the last 24 hours, in USD.",
   },
   {
-    url: "https://finality-x402-backend.onrender.com/v1/agent/briefing",
-    method: "POST",
-    label: "market_briefing",
-    summary: "Machine-readable market briefing for an agent to act on.",
-  },
-  {
-    url: "https://finality-x402-backend.onrender.com/v1/agent/decision",
-    method: "POST",
-    label: "risk_decision",
-    summary: "Deterministic risk-aware decision over supplied market inputs.",
-  },
-  {
-    url: "https://finality-x402-backend.onrender.com/v1/analysis/events",
-    method: "POST",
-    label: "market_events",
-    summary: "Market event intelligence extracted from recent activity.",
+    url: "https://api-testnet-production-a3ec.up.railway.app/metric/pact/pool_count",
+    method: "GET",
+    label: "pact_pool_count",
+    summary: "Number of liquidity pools live on Pact.",
   },
   {
     url: "https://hashlock.pronodealgo.xyz/api/timestamp",
@@ -314,9 +312,33 @@ export const CURATED: readonly CuratedService[] = [
     summary:
       "Anchors a document hash on Algorand and returns a proof-of-existence timestamp.",
   },
+  {
+    url: "https://sachet-x402.vercel.app/secrets",
+    method: "POST",
+    label: "secret_scan",
+    summary: "Scans supplied file contents for leaked credentials and secrets.",
+  },
+  {
+    url: "https://hacknite-36hr.onrender.com/run",
+    method: "POST",
+    label: "pr_review",
+    summary: "Reviews a GitHub pull request and returns findings, under a spend ceiling.",
+  },
 ];
 
 const CURATED_URLS = new Set(CURATED.map((c) => c.url));
+
+/**
+ * The body to send a curated service, taken from what it publishes via discovery.
+ *
+ * Sending a POST endpoint a body it did not ask for earns a 4xx that looks exactly
+ * like the service failing. The protocol already publishes the right shape, so this
+ * uses it rather than guessing.
+ */
+export function samplePayloadFor(store: Store, url: string): unknown {
+  const row = store.services({ activeOnly: false }).find((s) => s.resourceUrl === url);
+  return row?.discoveryInput ?? null;
+}
 
 export function isAllowlisted(resourceUrl: string): boolean {
   return CURATED_URLS.has(resourceUrl);

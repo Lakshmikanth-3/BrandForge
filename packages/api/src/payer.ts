@@ -333,14 +333,18 @@ export class DownstreamPayer {
       this.guard.release(decision.reservationId);
       const reason =
         settlement?.errorReason ?? `downstream returned HTTP ${res.status} after payment attempt`;
-      // settled here means money moved and nothing usable came back, which the
-      // scoring model weights hardest.
+      // A 4xx that is not a 402 means the service rejected OUR request -- a body it
+      // did not ask for, a missing field. That is our bug, not its unreliability,
+      // and scoring it against the service would make the record measure our bugs.
+      // 5xx, timeouts and paid-for-nothing remain the service's failures.
+      const clientError = res.status >= 400 && res.status < 500 && res.status !== 402;
       this.recordOutcome(service.url, {
         ok: false,
         httpStatus: res.status,
         latencyMs: Date.now() - startedAt,
         settled: txId !== null,
-        failureReason: reason,
+        clientError,
+        failureReason: clientError ? `our request was rejected: ${reason}` : reason,
       });
       return fail("payment", reason);
     }
@@ -436,6 +440,7 @@ export class DownstreamPayer {
       latencyMs: number | null;
       settled: boolean;
       failureReason: string | null;
+      clientError?: boolean;
     },
   ): void {
     try {
@@ -450,6 +455,7 @@ export class DownstreamPayer {
         // every curated service publishes one, so this stays null until it does.
         schemaOk: null,
         coldStart: false,
+        clientError: o.clientError ?? false,
         failureReason: o.failureReason,
       });
     } catch {

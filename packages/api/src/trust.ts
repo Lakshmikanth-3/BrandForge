@@ -19,6 +19,10 @@
  *     because it is the only failure that costs the operator.
  *  3. Too few observations means `unrated`, never a number. A score from 4 calls
  *     must not look like a score from 400.
+ *  4. A failure caused by our own bad request is not the service's failure. Sending
+ *     a POST endpoint an empty body earned a 400 from a service that works fine;
+ *     scoring that against it would have made the record measure our bugs. Those
+ *     outcomes are excluded from the window and counted separately.
  */
 import type { Store } from "./db.js";
 
@@ -35,6 +39,11 @@ export interface Outcome {
   schemaOk: boolean | null;
   /** The call only succeeded after a retry, i.e. the host was asleep. */
   coldStart: boolean;
+  /**
+   * The call failed because OUR request was invalid, not because the service
+   * misbehaved. Excluded from scoring entirely.
+   */
+  clientError?: boolean;
   failureReason: string | null;
 }
 
@@ -52,6 +61,8 @@ export interface TrustRecord {
   medianLatencyMs: number | null;
   schemaConformance: number | null;
   coldStartCount: number;
+  /** Failures attributable to our own malformed requests, excluded from the score. */
+  clientErrorCount: number;
   lastSeenAt: string | null;
   /** Stated plainly so a caller can judge how much the score is worth. */
   basis: string;
@@ -114,7 +125,9 @@ function latencyScore(ms: number | null): number {
  * this, because a score that drifts between runs cannot be sold or trusted.
  */
 export function computeRecord(resourceUrl: string, outcomes: Outcome[]): TrustRecord {
-  const window = outcomes.slice(0, WINDOW);
+  // Our own bad requests are not evidence about the service.
+  const clientErrorCount = outcomes.filter((o) => o.clientError === true).length;
+  const window = outcomes.filter((o) => o.clientError !== true).slice(0, WINDOW);
   const observations = window.length;
 
   const paidNothingCount = window.filter((o) => o.settled && !o.ok).length;
@@ -132,6 +145,7 @@ export function computeRecord(resourceUrl: string, outcomes: Outcome[]): TrustRe
       medianLatencyMs: null,
       schemaConformance: null,
       coldStartCount,
+      clientErrorCount,
       lastSeenAt,
       basis: `unrated: ${observations} observation${observations === 1 ? "" : "s"}, ` +
         `${MIN_OBSERVATIONS} needed`,
@@ -189,6 +203,7 @@ export function computeRecord(resourceUrl: string, outcomes: Outcome[]): TrustRe
     medianLatencyMs,
     schemaConformance,
     coldStartCount,
+    clientErrorCount,
     lastSeenAt,
     basis:
       `${observations} observation${observations === 1 ? "" : "s"}, ` +
