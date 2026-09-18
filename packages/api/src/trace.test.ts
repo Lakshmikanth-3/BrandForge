@@ -120,3 +120,70 @@ describe("TraceHub", () => {
     expect(() => hub.complete("no-such-trace")).not.toThrow();
   });
 });
+
+describe("flows", () => {
+  let store: Store;
+  let hub: TraceHub;
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+    hub = new TraceHub(store, "testnet");
+  });
+
+  it("defaults to the inbound flow", () => {
+    const t = hub.start("/v1/orchestrate");
+    expect(t.flow).toBe("inbound");
+    expect(t.steps.map((s) => s.id)).toEqual([
+      "request",
+      "challenge",
+      "payment",
+      "settle",
+      "deliver",
+      "receipt",
+    ]);
+  });
+
+  it("renders the nine-step bridged flow when asked", () => {
+    const t = hub.start("folks_tvl", "bridged");
+    expect(t.flow).toBe("bridged");
+    expect(t.steps.map((s) => s.id)).toEqual([
+      "resolve",
+      "trust",
+      "budget",
+      "request",
+      "challenge",
+      "payment",
+      "settle",
+      "confirm",
+      "deliver",
+    ]);
+  });
+
+  it("never splits verify from settle in either flow", () => {
+    // The facilitator does both inside one call that neither side observes.
+    for (const flow of ["inbound", "bridged"] as const) {
+      const ids = hub.start("x", flow).steps.map((s) => s.id);
+      expect(ids).toContain("settle");
+      expect(ids).not.toContain("verify");
+    }
+  });
+
+  it("stalls a bridged step on its own budget", () => {
+    vi.useFakeTimers();
+    const t = hub.start("folks_tvl", "bridged");
+    hub.begin(t.id, "request");
+    // A cold free-tier downstream gets 20s before it counts as stalled.
+    vi.advanceTimersByTime(19_000);
+    expect(hub.recent(1)[0]!.steps.find((s) => s.id === "request")!.state).toBe("active");
+    vi.advanceTimersByTime(1_500);
+    expect(hub.recent(1)[0]!.steps.find((s) => s.id === "request")!.state).toBe("stalled");
+    vi.useRealTimers();
+  });
+
+  it("persists which flow a trace belonged to", () => {
+    const t = hub.start("folks_tvl", "bridged");
+    hub.complete(t.id);
+    const saved = store.recentTraces(1)[0] as { flow: string };
+    expect(saved.flow).toBe("bridged");
+  });
+});

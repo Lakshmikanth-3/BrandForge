@@ -15,20 +15,66 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { Store } from "./db.js";
 
-export const STEPS = [
+export interface StepDef {
+  readonly id: StepId;
+  readonly label: string;
+  readonly hint: string;
+}
+
+/**
+ * Two flows, because the bridge sits on both sides of x402.
+ *
+ * `inbound` is an agent paying us. `bridged` is us paying a downstream service on
+ * an agent's behalf — the nine-step call from PRD §5.
+ *
+ * Note on verify/settle: they are never split. The facilitator performs both
+ * inside one call, and neither the resource server nor the paying client observes
+ * the two round trips separately. An earlier note here claimed Phase 3 would
+ * split them because we would be the client; that was wrong — as the payer we see
+ * less, not more. Reporting two timings would mean inventing one.
+ */
+export type StepId =
+  | "request"
+  | "challenge"
+  | "payment"
+  | "settle"
+  | "deliver"
+  | "receipt"
+  | "resolve"
+  | "trust"
+  | "budget"
+  | "confirm";
+
+export type FlowId = "inbound" | "bridged";
+
+const INBOUND_STEPS: readonly StepDef[] = [
   { id: "request", label: "Request", hint: "Agent calls the paid route" },
   { id: "challenge", label: "402 Challenge", hint: "Payment requirements returned" },
   { id: "payment", label: "X-PAYMENT", hint: "Signed payment header received" },
-  // Verify and settle are one observable span from inside the resource server:
-  // the facilitator does both behind a single call. Phase 3 splits them, because
-  // as the paying client we see the two round trips separately. Reporting two
-  // timings here would mean inventing one of them.
   { id: "settle", label: "Verify & settle", hint: "Facilitator settles USDC on Algorand" },
   { id: "deliver", label: "Deliver", hint: "Paid response returned" },
   { id: "receipt", label: "Receipt", hint: "Settlement recorded and reconciled" },
-] as const;
+];
 
-export type StepId = (typeof STEPS)[number]["id"];
+const BRIDGED_STEPS: readonly StepDef[] = [
+  { id: "resolve", label: "Resolve", hint: "Tool mapped to a curated service and price" },
+  { id: "trust", label: "Trust gate", hint: "Reliability record checked before paying" },
+  { id: "budget", label: "Budget guard", hint: "Spend reserved against the caps" },
+  { id: "request", label: "Request", hint: "Downstream service called" },
+  { id: "challenge", label: "402 Challenge", hint: "Downstream states its price" },
+  { id: "payment", label: "Pay", hint: "Payment signed and sent in X-PAYMENT" },
+  { id: "settle", label: "Verify & settle", hint: "Facilitator settles USDC on Algorand" },
+  { id: "confirm", label: "Confirm", hint: "Settlement confirmed against the indexer" },
+  { id: "deliver", label: "Deliver", hint: "Result returned to the agent" },
+];
+
+export const FLOWS: Record<FlowId, readonly StepDef[]> = {
+  inbound: INBOUND_STEPS,
+  bridged: BRIDGED_STEPS,
+};
+
+/** Kept for the inbound path and the existing /api/flow contract. */
+export const STEPS = INBOUND_STEPS;
 
 /**
  * `stalled` is a first-class state, not an error: it means the step is still
@@ -39,10 +85,14 @@ export type TraceState = "running" | "ok" | "failed" | "stalled";
 
 /** Per-step budget in ms. Exceeding it flips the step to `stalled` and emits. */
 const STEP_BUDGET_MS: Record<StepId, number> = {
-  request: 1_000,
+  resolve: 1_000,
+  trust: 2_000,
+  budget: 1_000,
+  request: 20_000, // a cold free-tier downstream can legitimately take this long
   challenge: 1_000,
   payment: 30_000, // waiting on a client to pay — long by nature
   settle: 8_000, // Algorand finality is ~3s; 8s means something is wrong
+  confirm: 15_000, // indexer lags the round it is confirming
   deliver: 5_000,
   receipt: 10_000,
 };
@@ -60,6 +110,7 @@ export interface Step {
 
 export interface Trace {
   id: string;
+  flow: FlowId;
   route: string;
   network: string;
   state: TraceState;
@@ -72,8 +123,8 @@ export interface Trace {
   steps: Step[];
 }
 
-function freshSteps(): Step[] {
-  return STEPS.map((s) => ({
+function freshSteps(flow: FlowId): Step[] {
+  return FLOWS[flow].map((s) => ({
     id: s.id,
     label: s.label,
     hint: s.hint,
@@ -108,9 +159,10 @@ export class TraceHub extends EventEmitter {
     this.setMaxListeners(0); // one listener per SSE client
   }
 
-  start(route: string): Trace {
+  start(route: string, flow: FlowId = "inbound"): Trace {
     const trace: Trace = {
       id: randomUUID(),
+      flow,
       route,
       network: this.network,
       state: "running",
@@ -120,7 +172,7 @@ export class TraceHub extends EventEmitter {
       createdAt: new Date().toISOString(),
       startedAtMs: Date.now(),
       totalMs: null,
-      steps: freshSteps(),
+      steps: freshSteps(flow),
     };
     this.live.set(trace.id, trace);
     this.publish(trace);
@@ -229,6 +281,7 @@ export class TraceHub extends EventEmitter {
     try {
       this.store.saveTrace({
         id: trace.id,
+        flow: trace.flow,
         route: trace.route,
         network: trace.network,
         state: trace.state,

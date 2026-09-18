@@ -79,6 +79,7 @@ CREATE INDEX IF NOT EXISTS receipts_direction  ON receipts (direction, settled_a
 
 CREATE TABLE IF NOT EXISTS traces (
   id          TEXT PRIMARY KEY,
+  flow        TEXT NOT NULL DEFAULT 'inbound',
   route       TEXT NOT NULL,
   network     TEXT NOT NULL,
   state       TEXT NOT NULL,
@@ -234,6 +235,7 @@ export class Store {
 
   saveTrace(t: {
     id: string;
+    flow: string;
     route: string;
     network: string;
     state: string;
@@ -245,14 +247,15 @@ export class Store {
   }): void {
     this.db
       .prepare(
-        `INSERT INTO traces (id, route, network, state, payer, tx_id, total_ms, created_at, steps_json)
-         VALUES (?,?,?,?,?,?,?,?,?)
+        `INSERT INTO traces (id, flow, route, network, state, payer, tx_id, total_ms, created_at, steps_json)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT (id) DO UPDATE SET
            state = excluded.state, payer = excluded.payer, tx_id = excluded.tx_id,
            total_ms = excluded.total_ms, steps_json = excluded.steps_json`,
       )
       .run(
         t.id,
+        t.flow,
         t.route,
         t.network,
         t.state,
@@ -270,6 +273,7 @@ export class Store {
       .all(Math.min(limit, 200)) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: r["id"],
+      flow: r["flow"] ?? "inbound",
       route: r["route"],
       network: r["network"],
       state: r["state"],
