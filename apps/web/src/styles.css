@@ -595,3 +595,66 @@ footer {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* -- services, budget -- */
+
+.summary {
+  white-space: normal;
+  min-width: 260px;
+  max-width: 420px;
+}
+
+.tag.halted {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.budget {
+  padding: 14px;
+}
+
+.budget-row {
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+
+.budget-row > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.meter {
+  height: 5px;
+  background: var(--line);
+  border-radius: 3px;
+  margin: 14px 0;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.budget-empty {
+  margin: 0;
+}
+
+/* Released reservations are dimmed, not hidden: a refusal is a feature. */
+.spend-settled {
+  color: var(--ok);
+}
+.spend-reserved {
+  color: var(--accent);
+}
+.spend-released {
+  color: var(--dim);
+}
+
+.flow-bridged {
+  color: var(--warn);
+}
+.flow-inbound {
+  color: var(--accent);
+}

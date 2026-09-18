@@ -1,6 +1,18 @@
 /** Mirrors the API shapes in packages/api. Nothing here is invented client-side. */
 
-export type StepId = "request" | "challenge" | "payment" | "settle" | "deliver" | "receipt";
+export type StepId =
+  | "request"
+  | "challenge"
+  | "payment"
+  | "settle"
+  | "deliver"
+  | "receipt"
+  | "resolve"
+  | "trust"
+  | "budget"
+  | "confirm";
+
+export type FlowId = "inbound" | "bridged";
 
 export type StepState = "pending" | "active" | "ok" | "failed" | "skipped" | "stalled";
 
@@ -19,6 +31,7 @@ export interface Step {
 
 export interface Trace {
   id: string;
+  flow: FlowId;
   route: string;
   network: string;
   state: TraceState;
@@ -63,6 +76,7 @@ export interface Receipt {
 
 export interface FlowShape {
   steps: { id: StepId; label: string; hint: string }[];
+  flows: Record<FlowId, { id: StepId; label: string; hint: string }[]>;
   routes: { orchestrate: string; trust: string };
   prices: { orchestrate: string; trust: string };
   network: string;
@@ -71,3 +85,37 @@ export interface FlowShape {
 
 /** Connection state of the live stream. Drives the "is this real" indicator. */
 export type StreamState = "connecting" | "live" | "down";
+
+export interface Budget {
+  halted: boolean;
+  day: string;
+  spentTodayUsdc: number;
+  remainingTodayUsdc: number;
+  caps: { perCallUsdc: number; perDayUsdc: number; perMerchantPerDayUsdc: number };
+  payerReady: boolean;
+  payerAddress: string | null;
+  recent: {
+    id: string;
+    merchant: string;
+    route: string;
+    amountUsdc: number;
+    state: string;
+    txId: string | null;
+    createdAt: string;
+  }[];
+}
+
+export interface Service {
+  label: string;
+  summary: string;
+  url: string;
+  method: string;
+  priceUsdc: number | null;
+  catalogPriceUsdc: number | null;
+  probeVerdict: string | null;
+  probeLatencyMs: number | null;
+  /** Live price divided by catalog price. 1 means they agree. */
+  priceDrift: number | null;
+  active: boolean;
+  probedAt: string | null;
+}

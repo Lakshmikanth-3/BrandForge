@@ -2,19 +2,26 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FlowVisualiser } from "./FlowVisualiser";
 import { useLive } from "./useLive";
-import type { Receipt, Trace } from "./types";
+import type { Budget, Receipt, Service, Trace } from "./types";
 
+/**
+ * The config that works today. It points at a local build rather than an npm
+ * package, because the package is not published yet: showing an npx snippet would
+ * be a copy-paste that fails.
+ */
 const INSTALL_SNIPPET = `{
   "mcpServers": {
     "sentry402": {
-      "command": "npx",
-      "args": ["-y", "@sentry402/mcp"]
+      "command": "node",
+      "args": ["/path/to/Sentry402/packages/mcp/dist/index.js"],
+      "env": { "NETWORK": "testnet" }
     }
   }
 }`;
 
 export default function App() {
-  const { traces, stats, flow, receipts, streamState, sendUnpaidRequest } = useLive();
+  const { traces, stats, flow, receipts, budget, services, streamState, sendUnpaidRequest } =
+    useLive();
   const [sending, setSending] = useState(false);
   const [lastStatus, setLastStatus] = useState<number | null>(null);
 
@@ -125,11 +132,34 @@ export default function App() {
       <section>
         <div className="sec-head">
           <h3>Install</h3>
+          <span className="dim mono">{services.length} services as agent tools</span>
         </div>
         <p className="note">
-          Phase 3 publishes the MCP server. The config block a developer copies will be this:
+          Build the repo, then add this to your MCP client. It points at a local build
+          because the npm package is not published yet, and a published-package snippet
+          here would be a copy-paste that fails.
         </p>
         <pre className="snippet">{INSTALL_SNIPPET}</pre>
+      </section>
+
+      <section>
+        <div className="sec-head">
+          <h3>Services the bridge can pay</h3>
+          <span className="dim mono">verified by live probe, not by the catalog</span>
+        </div>
+        <ServiceTable services={services} />
+      </section>
+
+      <section>
+        <div className="sec-head">
+          <h3>Budget guard</h3>
+          {budget ? (
+            <span className={`tag ${budget.halted ? "halted" : ""}`}>
+              {budget.halted ? "HALTED" : budget.payerReady ? "armed" : "payer not ready"}
+            </span>
+          ) : null}
+        </div>
+        <BudgetPanel budget={budget} />
       </section>
 
       <section>
@@ -148,6 +178,129 @@ export default function App() {
           An empty table means nothing has settled yet.
         </span>
       </footer>
+    </div>
+  );
+}
+
+function ServiceTable({ services }: { services: Service[] }) {
+  if (services.length === 0) {
+    return (
+      <p className="note dim">
+        No services in the registry yet. Run <code>npm run catalog:ingest</code>.
+      </p>
+    );
+  }
+  return (
+    <div className="panel scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>tool</th>
+            <th>price</th>
+            <th>catalog</th>
+            <th>probe</th>
+            <th>latency</th>
+            <th>what it returns</th>
+          </tr>
+        </thead>
+        <tbody>
+          {services.map((s) => {
+            const drifted = s.priceDrift !== null && Math.abs(s.priceDrift - 1) > 0.01;
+            return (
+              <tr key={s.label}>
+                <td>
+                  <span className={`dot ${s.probeVerdict === "ok" ? "ok" : "bad"}`} />
+                  {s.label}
+                </td>
+                <td className="num">{s.priceUsdc === null ? "\u2014" : s.priceUsdc.toFixed(4)}</td>
+                <td className={`num ${drifted ? "bad-text" : "dim"}`}>
+                  {s.catalogPriceUsdc === null ? "\u2014" : s.catalogPriceUsdc.toFixed(4)}
+                  {drifted && s.priceDrift !== null ? ` x${s.priceDrift.toFixed(2)}` : ""}
+                </td>
+                <td className={s.probeVerdict === "ok" ? "ok-text" : "bad-text"}>
+                  {s.probeVerdict ?? "not probed"}
+                </td>
+                <td className="num">
+                  {s.probeLatencyMs === null ? "\u2014" : `${s.probeLatencyMs}ms`}
+                </td>
+                <td className="dim summary">{s.summary}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BudgetPanel({ budget }: { budget: Budget | null }) {
+  if (!budget) {
+    return <p className="note dim">/api/budget did not respond.</p>;
+  }
+  const used =
+    budget.caps.perDayUsdc === 0 ? 0 : budget.spentTodayUsdc / budget.caps.perDayUsdc;
+  return (
+    <div className="panel budget">
+      <div className="budget-row">
+        <div>
+          <span className="counter-label">spent today</span>
+          <span className="counter-value num">{budget.spentTodayUsdc.toFixed(6)}</span>
+        </div>
+        <div>
+          <span className="counter-label">remaining</span>
+          <span className="counter-value num">{budget.remainingTodayUsdc.toFixed(6)}</span>
+        </div>
+        <div>
+          <span className="counter-label">daily cap</span>
+          <span className="counter-value num">{budget.caps.perDayUsdc.toFixed(2)}</span>
+        </div>
+        <div>
+          <span className="counter-label">per call</span>
+          <span className="counter-value num">{budget.caps.perCallUsdc.toFixed(2)}</span>
+        </div>
+      </div>
+      <div
+        className="meter"
+        role="img"
+        aria-label={`${Math.round(used * 100)} percent of the daily cap used`}
+      >
+        <motion.div
+          className="meter-fill"
+          animate={{ width: `${Math.min(100, used * 100)}%` }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
+        />
+      </div>
+      {budget.recent.length === 0 ? (
+        <p className="note dim budget-empty">
+          No outbound spend yet. Every reservation appears here, including ones released
+          because the payment did not happen.
+        </p>
+      ) : (
+        <div className="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>route</th>
+                <th>usdc</th>
+                <th>state</th>
+                <th>tx</th>
+                <th>when</th>
+              </tr>
+            </thead>
+            <tbody>
+              {budget.recent.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.route}</td>
+                  <td className="num">{r.amountUsdc.toFixed(6)}</td>
+                  <td className={`spend-${r.state}`}>{r.state}</td>
+                  <td className="dim">{r.txId ? `${r.txId.slice(0, 10)}...` : "\u2014"}</td>
+                  <td className="dim">{new Date(r.createdAt).toLocaleTimeString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -180,6 +333,7 @@ function TraceHistory({ traces }: { traces: Trace[] }) {
         <thead>
           <tr>
             <th>trace</th>
+            <th>flow</th>
             <th>route</th>
             <th>outcome</th>
             <th>stopped at</th>
@@ -194,6 +348,7 @@ function TraceHistory({ traces }: { traces: Trace[] }) {
             return (
               <tr key={t.id}>
                 <td className="dim">{t.id.slice(0, 8)}</td>
+                <td className={`flow-${t.flow}`}>{t.flow}</td>
                 <td>{t.route}</td>
                 <td className={`state-${t.state}`}>{t.state}</td>
                 <td className="dim">{halt ? halt.label : "—"}</td>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FlowShape, Receipt, Stats, StreamState, Trace } from "./types";
+import type { Budget, FlowShape, Receipt, Service, Stats, StreamState, Trace } from "./types";
 
 /**
  * Subscribes to the server's trace stream.
@@ -13,6 +13,8 @@ export function useLive() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [flow, setFlow] = useState<FlowShape | null>(null);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [budget, setBudget] = useState<Budget | null>(null);
+  const [services, setServices] = useState<Service[]>([]);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [lastPing, setLastPing] = useState<number | null>(null);
 
@@ -25,14 +27,18 @@ export function useLive() {
 
   const refreshSideData = useCallback(async () => {
     try {
-      const [s, r] = await Promise.all([
+      const [s, r, b, sv] = await Promise.all([
         fetch("/api/stats").then((x) => x.json() as Promise<Stats>),
         fetch("/api/receipts?limit=25").then(
           (x) => x.json() as Promise<{ receipts: Receipt[] }>,
         ),
+        fetch("/api/budget").then((x) => x.json() as Promise<Budget>),
+        fetch("/api/services").then((x) => x.json() as Promise<{ services: Service[] }>),
       ]);
       setStats(s);
       setReceipts(r.receipts);
+      setBudget(b);
+      setServices(sv.services);
     } catch {
       // Leave the last known values in place; the stream indicator carries the
       // failure. Blanking real numbers on a transient error is worse.
@@ -112,5 +118,15 @@ export function useLive() {
     return res.status;
   }, []);
 
-  return { traces, stats, flow, receipts, streamState, lastPing, sendUnpaidRequest };
+  return {
+    traces,
+    stats,
+    flow,
+    receipts,
+    budget,
+    services,
+    streamState,
+    lastPing,
+    sendUnpaidRequest,
+  };
 }
