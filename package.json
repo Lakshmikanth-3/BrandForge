@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "npm run dev -w @sentry402/api",
     "build": "tsc --build && npm run build:web",
-    "typecheck": "tsc --build --force",
+    "typecheck": "tsc --build --force && tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p apps/web/tsconfig.json",
     "test": "vitest run && npm run test:web",
     "test:watch": "vitest",
     "accounts:create": "tsx scripts/create-accounts.ts",
@@ -23,7 +23,8 @@
     "build:web": "npm run build -w @sentry402/web",
     "catalog:ingest": "tsx scripts/ingest.ts",
     "reconcile": "tsx scripts/reconcile.ts",
-    "test:web": "npm run test -w @sentry402/web"
+    "test:web": "npm run test -w @sentry402/web",
+    "accounts:optin": "tsx scripts/optin-accounts.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

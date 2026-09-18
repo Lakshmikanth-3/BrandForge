@@ -26,7 +26,7 @@ let failed = false;
 
 for (const { label, status } of results) {
   const problems: string[] = [];
-  if (!status.exists) problems.push("account not found on chain (needs ALGO)");
+  if (!status.funded) problems.push("holds no ALGO — fund it first");
   if (status.spendableAlgo <= 0) problems.push("no spendable ALGO above min-balance");
   if (!status.usdcOptedIn) problems.push(`not opted into USDC ${config.network.usdcAsaId}`);
 
