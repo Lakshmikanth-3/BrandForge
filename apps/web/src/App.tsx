@@ -73,30 +73,35 @@ export default function App() {
         <div>
           <h2>The problem</h2>
           <p>
-            An agent that needs a live service today has to sign up, store a key, and manage
-            a subscription for something it may use twice. x402 fixed the billing. It did not
-            fix discovery, and it did not fix trust. Paying a stranger&apos;s endpoint is a leap
-            of faith with money you cannot get back. So the services exist, and nobody calls them.
+            x402 fixed the billing: an agent pays per call over HTTP, no account, no key.
+            What it did not fix is the wiring. Using a paid service still means a developer
+            hand-writing an integration, holding a wallet, and trusting an endpoint with
+            money that cannot be recalled. So the services exist and the demand does not.
           </p>
         </div>
         <div>
           <h2>What this is</h2>
           <p>
-            One MCP server. Your agent discovers every live x402 service on Algorand, checks
-            whether each one actually delivers before paying it, and settles per call in USDC
-            under a budget you set. Install once. Your agent never sees a wallet.
+            One MCP server. Install it once and your agent gains every curated x402 service
+            on Algorand as a native tool, priced per call, paid in USDC, under a spend cap
+            you set. Your agent never sees a wallet and never handles a 402.
+          </p>
+          <p>
+            Relays and pre-spend checkers exist. An agent-native install and an enforced
+            budget with a kill switch do not.
           </p>
         </div>
         <div>
           <h2>Why here</h2>
           <p>
-            Payments worth fractions of a cent need sub-cent fees and sub-three-second finality.
-            An agent deciding in 200ms cannot wait on settlement or pay more in fees than the
-            data costs.
+            Payments worth fractions of a cent need sub-cent fees and sub-three-second
+            finality. An agent deciding in 200ms cannot wait on settlement or pay more in
+            fees than the data costs.
           </p>
           <p className="emph">
-            Every call routed through this bridge is volume for another entrant&apos;s endpoint.
-            This project does not only compete on the leaderboard — it feeds it.
+            Every call routed through this bridge is volume for another entrant&apos;s
+            endpoint. This project does not only compete on the leaderboard &mdash; it
+            feeds it.
           </p>
         </div>
       </section>
