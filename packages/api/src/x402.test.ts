@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, CHALLENGE_TAG, TESTNET } from "@sentry402/shared";
+import { validateDiscoveryExtension } from "@x402/extensions/bazaar";
 import { createApp } from "./app.js";
 import { Store } from "./db.js";
 
@@ -307,5 +308,59 @@ describe("discovery declaration (BAZAAR badge)", () => {
     const input = challenge.extensions?.bazaar?.info?.input;
     expect(input?.method).toBe("POST");
     expect(input?.body).toMatchObject({ target: expect.any(String) });
+  });
+});
+
+describe("the discovery declaration is valid per the CURRENT spec", () => {
+  // Discovery is the most commonly reported failure in this competition, and the
+  // declaration builder used to come from @x402-avm/extensions 2.6.1 (March) while the
+  // maintained package is @x402/extensions 2.26.0. Worse, the payment middleware
+  // auto-registers the bazaar extension from the current package only when the server
+  // does not already have one, so registering the stale extension suppressed it.
+  //
+  // These assertions run the package's own validator over what the endpoint actually
+  // emits, because the declaration and what the facilitator receives are different
+  // facts and only the second one matters.
+  const bazaarOf = (res: Response) => {
+    const challenge = challengeOf(res) as unknown as {
+      extensions?: { bazaar?: unknown };
+    };
+    expect(challenge.extensions?.bazaar, "extensions.bazaar must be present").toBeDefined();
+    return challenge.extensions!.bazaar;
+  };
+
+  it("emits a spec-valid declaration for the orchestration route", async () => {
+    const res = await app().app.request("/v1/orchestrate", { method: "POST" });
+    expect(validateDiscoveryExtension(bazaarOf(res))).toMatchObject({ valid: true });
+  });
+
+  it("emits a spec-valid declaration for the trust route", async () => {
+    const res = await app().app.request("/v1/trust?url=https%3A%2F%2Fexample.test%2Fx");
+    expect(validateDiscoveryExtension(bazaarOf(res))).toMatchObject({ valid: true });
+  });
+
+  it("carries the method the middleware injects from the route key", async () => {
+    // declareDiscoveryExtension is called WITHOUT a method, because the type omits it
+    // and the middleware fills it in. If that ever stops happening the declaration
+    // becomes invalid, and this is the test that catches it.
+    const post = challengeOf(
+      await app().app.request("/v1/orchestrate", { method: "POST" }),
+    ) as unknown as { extensions: { bazaar: { info: { input: { method: string } } } } };
+    expect(post.extensions.bazaar.info.input.method).toBe("POST");
+
+    const get = challengeOf(
+      await app().app.request("/v1/trust?url=https%3A%2F%2Fexample.test%2Fx"),
+    ) as unknown as { extensions: { bazaar: { info: { input: { method: string } } } } };
+    expect(get.extensions.bazaar.info.input.method).toBe("GET");
+  });
+
+  it("declares a GET route by query parameters, not a body", async () => {
+    const get = challengeOf(
+      await app().app.request("/v1/trust?url=https%3A%2F%2Fexample.test%2Fx"),
+    ) as unknown as {
+      extensions: { bazaar: { info: { input: { queryParams?: unknown; body?: unknown } } } };
+    };
+    expect(get.extensions.bazaar.info.input.queryParams).toBeDefined();
+    expect(get.extensions.bazaar.info.input.body).toBeUndefined();
   });
 });

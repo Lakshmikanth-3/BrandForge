@@ -14,7 +14,23 @@
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
-import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402-avm/extensions";
+// @x402/extensions, not @x402-avm/extensions. Same exports, but 2.26.0 against 2.6.1
+// from March, and the middleware auto-registers the bazaar extension from THIS package
+// when a route needs it -- so registering the stale one made hasExtension("bazaar")
+// true and suppressed the current one. Discovery is the most commonly reported failure
+// in this competition; running it on a six-month-old declaration builder is not worth
+// the risk.
+//
+// input.method is deliberately NOT passed below: the type omits it and the payment
+// middleware injects it from the route key ("GET /v1/trust" -> method GET). A test
+// validates the LIVE 402 against this package's own spec validator, which is the only
+// check that matters -- the declaration and what the facilitator receives are
+// different facts.
+import {
+  bazaarResourceServerExtension,
+  declareDiscoveryExtension,
+} from "@x402/extensions/bazaar";
+import { avmPaywall, createPaywall } from "@x402/paywall";
 import type { ResourceServerExtension } from "@x402/core/types";
 import type { MiddlewareHandler } from "hono";
 import { CHALLENGE_TAG, type AppConfig } from "@sentry402/shared";
@@ -180,7 +196,32 @@ export function paidRoutes(config: AppConfig) {
   };
 }
 
+/**
+ * Browser paywall.
+ *
+ * A machine that hits a paid route gets a 402 and pays it. A person who hits the same
+ * route in a browser gets a bare 402 and nothing to do with it, which makes every
+ * paid endpoint here unusable by the humans most likely to try one — and distinct
+ * payer addresses is the metric the Foundation explicitly asks to see proof of.
+ *
+ * The official paywall renders a payment page with Pera, Defly and Lute, so a
+ * developer who reads the README can become a real payer in a browser instead of
+ * writing a client first.
+ */
+const paywall = createPaywall()
+  .withNetwork(avmPaywall)
+  .withConfig({
+    appName: "Sentry402",
+    testnet: true,
+  })
+  .build();
+
 export function x402Middleware(config: AppConfig): MiddlewareHandler {
   const server = buildResourceServer(config);
-  return paymentMiddleware(paidRoutes(config), server) as MiddlewareHandler;
+  return paymentMiddleware(
+    paidRoutes(config),
+    server,
+    { testnet: config.network.name === "testnet" },
+    paywall,
+  ) as MiddlewareHandler;
 }
