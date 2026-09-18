@@ -287,3 +287,62 @@ describe("RateLimiter", () => {
     expect(body.hint).toMatch(/\/v1\/trust is not rate limited/);
   });
 });
+
+describe("browser paywall", () => {
+  // A machine that hits a paid route pays it. A person who hits the same route in a
+  // browser previously got a bare 402 and nothing to do with it, which made every paid
+  // endpoint here unusable by the humans most likely to try one. Distinct payer
+  // addresses is the metric the Foundation asks for proof of, so that gap mattered.
+  const asBrowser = {
+    Accept: "text/html",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  };
+
+  it("serves a wallet payment page to a browser", async () => {
+    const { app } = createApp(config, ":memory:");
+    const res = await app.request(`${ROUTE_PATHS.trust}?url=https%3A%2F%2Fexample.test%2Fx`, {
+      headers: asBrowser,
+    });
+
+    expect(res.status).toBe(402);
+    expect(res.headers.get("content-type")).toMatch(/text\/html/);
+
+    const html = await res.text();
+    // The wallets a person on Algorand actually has.
+    for (const wallet of ["Pera", "Defly", "Lute"]) expect(html).toContain(wallet);
+    expect(html).toContain("Sentry402");
+  });
+
+  it("still serves JSON to a machine, which must not change", async () => {
+    const { app } = createApp(config, ":memory:");
+    const res = await app.request(`${ROUTE_PATHS.trust}?url=https%3A%2F%2Fexample.test%2Fx`);
+    expect(res.status).toBe(402);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(res.headers.get("payment-required")).toBeTruthy();
+  });
+
+  it("requires both a browser Accept header and a browser user agent", async () => {
+    // The condition is Accept containing text/html AND a Mozilla user agent. Getting
+    // this wrong is how an earlier attempt concluded the paywall was broken.
+    const { app } = createApp(config, ":memory:");
+
+    const acceptOnly = await app.request(ROUTE_PATHS.trust, {
+      headers: { Accept: "text/html" },
+    });
+    expect(acceptOnly.headers.get("content-type")).toMatch(/application\/json/);
+
+    const uaOnly = await app.request(ROUTE_PATHS.trust, {
+      headers: { "User-Agent": asBrowser["User-Agent"] },
+    });
+    expect(uaOnly.headers.get("content-type")).toMatch(/application\/json/);
+  });
+
+  it("puts a paywall on the orchestration route too", async () => {
+    const { app } = createApp(config, ":memory:");
+    const res = await app.request(ROUTE_PATHS.orchestrate, {
+      method: "POST",
+      headers: asBrowser,
+    });
+    expect(res.headers.get("content-type")).toMatch(/text\/html/);
+  });
+});
