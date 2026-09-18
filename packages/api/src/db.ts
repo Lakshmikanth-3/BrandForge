@@ -90,6 +90,34 @@ CREATE TABLE IF NOT EXISTS traces (
 );
 CREATE INDEX IF NOT EXISTS traces_created_at ON traces (created_at DESC);
 
+-- Known x402 services from the Bazaar catalog. The active flag goes false when the
+-- catalog stops listing a service; the row is kept so trust history survives.
+CREATE TABLE IF NOT EXISTS services (
+  resource_url      TEXT PRIMARY KEY,
+  method            TEXT NOT NULL,
+  description       TEXT NOT NULL,
+  pay_to            TEXT NOT NULL,
+  network           TEXT NOT NULL,
+  amount_base       INTEGER NOT NULL,
+  asset_id          TEXT NOT NULL,
+  settle_count      INTEGER NOT NULL DEFAULT 0,
+  last_seen         TEXT NOT NULL,
+  has_discovery     INTEGER NOT NULL DEFAULT 0,
+  allowlisted       INTEGER NOT NULL DEFAULT 0,
+  active            INTEGER NOT NULL DEFAULT 1,
+  first_ingested_at TEXT NOT NULL,
+  -- Last probe outcome. Null until probed; a catalog entry is a claim, not a fact.
+  probe_verdict     TEXT,
+  probe_status      INTEGER,
+  probe_latency_ms  INTEGER,
+  probe_live_amount INTEGER,
+  probe_drift       REAL,
+  probe_cold_start  INTEGER,
+  probe_detail      TEXT,
+  probed_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS services_allowlisted ON services (allowlisted, active);
+
 -- Cursor for the indexer settlement listener, so a restart does not rescan
 -- from genesis and does not miss rounds.
 CREATE TABLE IF NOT EXISTS listener_state (
@@ -230,6 +258,129 @@ export class Store {
     }));
   }
 
+  /**
+   * Inserts or refreshes a catalog entry. Preserves `first_ingested_at` and the
+   * last probe result — an ingest tells us what the catalog claims, not whether
+   * the service works.
+   */
+  upsertService(
+    e: {
+      resourceUrl: string;
+      method: string;
+      description: string;
+      payTo: string;
+      network: string;
+      amountBase: number;
+      assetId: string;
+      settleCount: number;
+      lastSeen: string;
+      hasDiscoveryInfo: boolean;
+    },
+    allowlisted: boolean,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO services
+           (resource_url, method, description, pay_to, network, amount_base, asset_id,
+            settle_count, last_seen, has_discovery, allowlisted, active, first_ingested_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)
+         ON CONFLICT (resource_url) DO UPDATE SET
+           method = excluded.method,
+           description = excluded.description,
+           pay_to = excluded.pay_to,
+           network = excluded.network,
+           amount_base = excluded.amount_base,
+           asset_id = excluded.asset_id,
+           settle_count = excluded.settle_count,
+           last_seen = excluded.last_seen,
+           has_discovery = excluded.has_discovery,
+           allowlisted = excluded.allowlisted,
+           active = 1`,
+      )
+      .run(
+        e.resourceUrl,
+        e.method,
+        e.description,
+        e.payTo,
+        e.network,
+        e.amountBase,
+        e.assetId,
+        e.settleCount,
+        e.lastSeen,
+        e.hasDiscoveryInfo ? 1 : 0,
+        allowlisted ? 1 : 0,
+        new Date().toISOString(),
+      );
+  }
+
+  services(opts: { allowlistedOnly?: boolean; network?: string; activeOnly?: boolean } = {}) {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (opts.allowlistedOnly) clauses.push("allowlisted = 1");
+    if (opts.activeOnly !== false) clauses.push("active = 1");
+    if (opts.network) {
+      clauses.push("network = ?");
+      params.push(opts.network);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(`SELECT * FROM services ${where} ORDER BY settle_count DESC`)
+      .all(...params) as Record<string, unknown>[];
+    return rows.map(toService);
+  }
+
+  /**
+   * Marks every service NOT in `seenUrls` inactive. Deleting would destroy the
+   * observation history the trust engine depends on.
+   */
+  markMissingInactive(seenUrls: string[], network: string): number {
+    const known = this.db
+      .prepare(`SELECT resource_url FROM services WHERE network = ? AND active = 1`)
+      .all(network) as Record<string, unknown>[];
+    const seen = new Set(seenUrls);
+    let count = 0;
+    for (const row of known) {
+      const url = String(row["resource_url"]);
+      if (seen.has(url)) continue;
+      this.db.prepare(`UPDATE services SET active = 0 WHERE resource_url = ?`).run(url);
+      count += 1;
+    }
+    return count;
+  }
+
+  recordProbe(
+    resourceUrl: string,
+    p: {
+      verdict: string;
+      httpStatus: number | null;
+      latencyMs: number;
+      liveAmountBase: number | null;
+      priceDriftRatio: number | null;
+      coldStart: boolean;
+      detail: string | null;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE services SET
+           probe_verdict = ?, probe_status = ?, probe_latency_ms = ?,
+           probe_live_amount = ?, probe_drift = ?, probe_cold_start = ?,
+           probe_detail = ?, probed_at = ?
+         WHERE resource_url = ?`,
+      )
+      .run(
+        p.verdict,
+        p.httpStatus,
+        p.latencyMs,
+        p.liveAmountBase,
+        p.priceDriftRatio,
+        p.coldStart ? 1 : 0,
+        p.detail,
+        new Date().toISOString(),
+        resourceUrl,
+      );
+  }
+
   getCursor(key: string): string | null {
     const row = this.db.prepare(`SELECT value FROM listener_state WHERE key = ?`).get(key) as
       | Record<string, unknown>
@@ -249,6 +400,56 @@ export class Store {
   close(): void {
     this.db.close();
   }
+}
+
+export interface ServiceRow {
+  resourceUrl: string;
+  method: string;
+  description: string;
+  payTo: string;
+  network: string;
+  amountBase: number;
+  assetId: string;
+  settleCount: number;
+  lastSeen: string;
+  hasDiscoveryInfo: boolean;
+  allowlisted: boolean;
+  active: boolean;
+  probeVerdict: string | null;
+  probeStatus: number | null;
+  probeLatencyMs: number | null;
+  probeLiveAmount: number | null;
+  probeDrift: number | null;
+  probeColdStart: boolean | null;
+  probeDetail: string | null;
+  probedAt: string | null;
+}
+
+function toService(r: Record<string, unknown>): ServiceRow {
+  const num = (k: string) => (r[k] === null || r[k] === undefined ? null : Number(r[k]));
+  const str = (k: string) => (r[k] === null || r[k] === undefined ? null : String(r[k]));
+  return {
+    resourceUrl: String(r["resource_url"]),
+    method: String(r["method"]),
+    description: String(r["description"]),
+    payTo: String(r["pay_to"]),
+    network: String(r["network"]),
+    amountBase: Number(r["amount_base"]),
+    assetId: String(r["asset_id"]),
+    settleCount: Number(r["settle_count"]),
+    lastSeen: String(r["last_seen"]),
+    hasDiscoveryInfo: Number(r["has_discovery"]) === 1,
+    allowlisted: Number(r["allowlisted"]) === 1,
+    active: Number(r["active"]) === 1,
+    probeVerdict: str("probe_verdict"),
+    probeStatus: num("probe_status"),
+    probeLatencyMs: num("probe_latency_ms"),
+    probeLiveAmount: num("probe_live_amount"),
+    probeDrift: num("probe_drift"),
+    probeColdStart: r["probe_cold_start"] === null ? null : Number(r["probe_cold_start"]) === 1,
+    probeDetail: str("probe_detail"),
+    probedAt: str("probed_at"),
+  };
 }
 
 function toReceipt(r: Record<string, unknown>): ReceiptRow {

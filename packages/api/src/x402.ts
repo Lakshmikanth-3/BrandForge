@@ -14,6 +14,8 @@
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402-avm/extensions";
+import type { ResourceServerExtension } from "@x402/core/types";
 import type { MiddlewareHandler } from "hono";
 import { CHALLENGE_TAG, type AppConfig } from "@sentry402/shared";
 
@@ -30,12 +32,64 @@ export const ROUTE_PATHS = {
 
 export function buildResourceServer(config: AppConfig) {
   const facilitatorClient = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
-  // caip2 is a plain string in shared/ so the constants stay data, not types.
-  return new x402ResourceServer(facilitatorClient).register(
-    config.network.caip2 as `${string}:${string}`,
+
+  // Registered against the "algorand:*" glob rather than one exact chain id.
+  // @x402/avm changed its CAIP-2 constants to the 32-char reference form in
+  // 2.20.0 while the facilitator still advertises the full genesis hash, so a
+  // single exact registration can miss depending on which side changes first.
+  // The glob accepts either. What we ADVERTISE is still the full form, because
+  // that is what the facilitator and every live Bazaar route use.
+  const server = new x402ResourceServer(facilitatorClient).register(
+    "algorand:*",
     new ExactAvmScheme(),
   );
+
+  // Required for the BAZAAR badge: without this extension the endpoint takes
+  // payments but is never catalogued. The first settled payment then
+  // auto-catalogs it — there is no separate registration step.
+  server.registerExtension(bazaarResourceServerExtension as unknown as ResourceServerExtension);
+
+  return server;
 }
+
+/**
+ * Discovery metadata for the orchestration route. This is what an agent reads
+ * from the Bazaar to know how to call us, so the example must be real shape.
+ */
+const orchestrateDiscovery = declareDiscoveryExtension({
+  bodyType: "json",
+  input: {
+    target: "https://api.example.com/resource",
+    payload: { query: "optional request body for the downstream service" },
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      target: {
+        type: "string",
+        description: "URL of the x402 service to call on the agent's behalf",
+      },
+      payload: {
+        type: "object",
+        description: "Request body forwarded to the downstream service",
+      },
+    },
+    required: ["target"],
+  },
+  output: {
+    example: {
+      ok: true,
+      target: "https://api.example.com/resource",
+      trust: { score: 0.94, observations: 128, verdict: "pass" },
+      result: { "...": "the downstream service's response, verbatim" },
+      receipt: {
+        txId: "ABC123...",
+        amountUsdc: 0.02,
+        network: "algorand-mainnet",
+      },
+    },
+  },
+});
 
 /**
  * Phase 1 ships the orchestration route only, returning a stub payload. Phase 3
@@ -69,6 +123,7 @@ export function paidRoutes(config: AppConfig) {
         "response plus a receipt with the settlement transaction id. No API key, no " +
         "account, no wallet in the agent.",
       mimeType: "application/json",
+      extensions: orchestrateDiscovery,
     },
   };
 }

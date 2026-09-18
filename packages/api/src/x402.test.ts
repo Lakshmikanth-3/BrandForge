@@ -228,3 +228,70 @@ describe("receipt store", () => {
     expect(s.totalBase).toBe(50_000);
   });
 });
+
+describe("domain metadata the facilitator reads", () => {
+  // Merchant identity is derived from OpenGraph tags, llms.txt or
+  // agent-card.json — not an MCP manifest. Accuracy matters: the enrichment pass
+  // runs at most daily, so a wrong price propagates into the Bazaar listing.
+  it("serves llms.txt as plain text naming the route and its price", async () => {
+    const res = await app().app.request("/llms.txt");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/text\/plain/);
+
+    const body = await res.text();
+    expect(body).toMatch(/Sentry402/);
+    expect(body).toMatch(/POST .*\/v1\/orchestrate/);
+    expect(body).toMatch(/\$0\.05/);
+    expect(body).toContain("10458941");
+    expect(body).toContain("facilitator.goplausible.xyz");
+  });
+
+  it("serves an agent card advertising only the live route", async () => {
+    const res = await app().app.request("/.well-known/agent-card.json");
+    expect(res.status).toBe(200);
+
+    const card = await res.json();
+    expect(card.name).toBe("Sentry402");
+    expect(card.payment.x402Version).toBe(2);
+    expect(card.payment.network).toBe(TESTNET.caip2);
+    expect(card.payment.asset).toBe("10458941");
+    expect(card.payment.routes).toHaveLength(1);
+    expect(card.payment.routes[0]).toMatchObject({
+      method: "POST",
+      path: "/v1/orchestrate",
+      price: "$0.05",
+    });
+    // The trust route is Phase 5. Advertising it now would be a false claim.
+    expect(JSON.stringify(card)).not.toContain("/v1/trust");
+  });
+
+  it("never leaks key material in domain metadata", async () => {
+    for (const path of ["/llms.txt", "/.well-known/agent-card.json"]) {
+      const text = await (await app().app.request(path)).text();
+      expect(text).not.toContain("word0");
+      expect(text.toLowerCase()).not.toContain("mnemonic");
+    }
+  });
+});
+
+describe("discovery declaration (BAZAAR badge)", () => {
+  it("includes the bazaar extension in the 402, without which nothing is catalogued", async () => {
+    const res = await app().app.request("/v1/orchestrate", { method: "POST" });
+    const challenge = challengeOf(res) as unknown as {
+      extensions?: { bazaar?: { info?: unknown; schema?: unknown } };
+    };
+    expect(challenge.extensions?.bazaar).toBeDefined();
+    expect(challenge.extensions?.bazaar?.info).toBeDefined();
+    expect(challenge.extensions?.bazaar?.schema).toBeDefined();
+  });
+
+  it("declares the input schema an agent needs to call us", async () => {
+    const res = await app().app.request("/v1/orchestrate", { method: "POST" });
+    const challenge = challengeOf(res) as unknown as {
+      extensions?: { bazaar?: { info?: { input?: { method?: string; body?: unknown } } } };
+    };
+    const input = challenge.extensions?.bazaar?.info?.input;
+    expect(input?.method).toBe("POST");
+    expect(input?.body).toMatchObject({ target: expect.any(String) });
+  });
+});

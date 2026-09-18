@@ -8,6 +8,8 @@ import { traceMiddleware } from "./tracing.js";
 import { apiRoutes } from "./api.js";
 import { ROUTE_PATHS, x402Middleware } from "./x402.js";
 import { SettlementListener } from "./listener.js";
+import { CatalogIngester } from "./catalog.js";
+import { metadataRoutes } from "./metadata.js";
 
 export interface DependencyStatus {
   readonly name: string;
@@ -71,6 +73,7 @@ export interface AppParts {
   store: Store;
   hub: TraceHub;
   listener: SettlementListener;
+  ingester: CatalogIngester;
 }
 
 /** $0.05 in USDC base units. Kept as an integer; floats never hold money. */
@@ -99,7 +102,11 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
   // Liveness only — never touches the network, so a chain outage can't restart us.
   app.get("/livez", (c) => c.json({ alive: true, buildSha: config.buildSha }));
 
+  const ingester = new CatalogIngester(config.network, store, config.facilitatorUrl);
+
   app.route("/api", apiRoutes(config, store, hub));
+  // Served at the root, since the facilitator probes the domain, not a subpath.
+  app.route("/", metadataRoutes(config));
 
   // Order matters: the tracer wraps the payment middleware so it observes both
   // the 402 it issues and the settlement it completes.
@@ -118,5 +125,5 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     }),
   );
 
-  return { app, store, hub, listener };
+  return { app, store, hub, listener, ingester };
 }

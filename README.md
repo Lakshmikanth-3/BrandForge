@@ -10,9 +10,10 @@ and settle per call in USDC on Algorand under a developer-set budget. The reliab
 record the bridge builds from its own routed traffic is itself sold as a paid x402
 endpoint.
 
-> Status: **Phase 1 complete** — paid x402 route live on TestNet, trace engine, receipt
-> store, settlement listener, and a live flow UI driven entirely by real traces.
-> Not yet on MainNet. Discovery (`bazaar: true`) is Phase 2.
+> Status: **Phase 2 code complete** — paid route, trace engine, live flow UI, Bazaar
+> discovery declared, domain metadata served, catalog ingester with 6 curated and
+> probe-verified downstream services. Not yet on MainNet; badge confirmation needs
+> the public endpoint.
 
 ## Stack
 
@@ -89,6 +90,55 @@ npm run typecheck
 | `packages/api/src/app.test.ts` | `/healthz` + `/livez` shape, CORS, no key leakage |
 | `packages/api/src/x402.test.ts` | 402 conformance, ASA/base units, challenge tag, tracing, receipt idempotency |
 | `packages/api/src/trace.test.ts` | Stall detection, halt-point marking, persistence |
+| `packages/api/src/catalog.test.ts` | Catalog normalisation, probe verdicts, drift, curation, staleness |
+
+### Discovery and the catalog (Phase 2)
+
+`declareDiscoveryExtension` is declared per route and `bazaarResourceServerExtension`
+is registered on the resource server. Both are required: without them the endpoint
+takes payments and is never catalogued. The first settled payment then auto-catalogs
+it — there is no separate registration step.
+
+Domain metadata is served at the root, because the facilitator probes the domain:
+
+- `GET /llms.txt`
+- `GET /.well-known/agent-card.json`
+
+The facilitator derives merchant identity from OpenGraph tags, `llms.txt` or
+`agent-card.json`. It does **not** read an MCP manifest — worth stating because the
+opposite is easy to assume.
+
+**The HACKATHON badge requires MainNet routes**, so on TestNet only BAZAAR is
+reachable. That is expected, not a failure.
+
+#### What the live catalog is actually like
+
+Measured against the real listing on 2026-09-18 (`npm run catalog:ingest`):
+
+| | |
+| --- | --- |
+| Routes in the catalog | 2,087 |
+| Payable on TestNet (USDC, exact) | 233 |
+| Skipped as not-for-us or malformed | 1,854 |
+| Curated and probe-verified | 6 |
+
+Three things the ingester exists to handle, all observed rather than assumed:
+
+1. **Entries go stale.** Of the ten busiest TestNet services, three answered 400 or
+   404. A catalog entry is a claim, so nothing becomes a tool until a live probe
+   confirms a spec-compliant 402.
+2. **Prices drift.** Two verified services charged a different amount than the
+   catalog advertised — one 5x, one 8.5x. The probe records the live price and
+   surfaces the mismatch rather than paying it silently.
+3. **A first-call timeout is usually a cold start.** Four services timed out at 20s
+   and then answered in ~1.5s once warm. Probes retry once before recording
+   unreachable; without that the trust engine would condemn most of the ecosystem
+   for being on a free tier.
+
+Curation is by **exact URL, not host**: one vendor publishes 30 routes and another 19,
+so a host allowlist produced 59 tools from 5 vendors. Excluded despite answering 402 —
+one MainNet-only service, one plain-http service, and one vendor whose every route
+drifted 4-5x.
 
 ### The paid route
 
