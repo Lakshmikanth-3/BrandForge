@@ -12,6 +12,7 @@ import { CatalogIngester } from "./catalog.js";
 import { metadataRoutes } from "./metadata.js";
 import { BudgetGuard } from "./budget.js";
 import { DownstreamPayer } from "./payer.js";
+import { TrustEngine } from "./trust.js";
 
 export interface DependencyStatus {
   readonly name: string;
@@ -77,6 +78,7 @@ export interface AppParts {
   listener: SettlementListener;
   ingester: CatalogIngester;
   guard: BudgetGuard;
+  trust: TrustEngine;
   /** Null when the payer could not be constructed; the API still serves. */
   payer: DownstreamPayer | null;
 }
@@ -109,12 +111,13 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
 
   const ingester = new CatalogIngester(config.network, store, config.facilitatorUrl);
   const guard = new BudgetGuard(store);
+  const trust = new TrustEngine(store);
 
   // A bad payer key must not take the whole API down: /healthz still needs to be
   // able to report why the bridge cannot spend.
   let payer: DownstreamPayer | null = null;
   try {
-    payer = new DownstreamPayer(config, store, guard, hub);
+    payer = new DownstreamPayer(config, store, guard, hub, trust);
   } catch (err) {
     console.error(
       "payer disabled:",
@@ -122,7 +125,7 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     );
   }
 
-  app.route("/api", apiRoutes(config, store, hub, guard, payer));
+  app.route("/api", apiRoutes(config, store, hub, guard, trust, payer));
   // Served at the root, since the facilitator probes the domain, not a subpath.
   app.route("/", metadataRoutes(config));
 
@@ -143,5 +146,5 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     }),
   );
 
-  return { app, store, hub, listener, ingester, guard, payer };
+  return { app, store, hub, listener, ingester, guard, trust, payer };
 }

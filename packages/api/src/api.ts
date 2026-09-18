@@ -10,6 +10,7 @@ import { FLOWS, STEPS, type Trace, type TraceHub } from "./trace.js";
 import { PRICES, ROUTE_PATHS } from "./x402.js";
 import type { BudgetGuard } from "./budget.js";
 import type { DownstreamPayer } from "./payer.js";
+import type { TrustEngine } from "./trust.js";
 import { CURATED } from "./catalog.js";
 
 export function apiRoutes(
@@ -17,6 +18,7 @@ export function apiRoutes(
   store: Store,
   hub: TraceHub,
   guard: BudgetGuard,
+  trust: TrustEngine,
   payer: DownstreamPayer | null,
 ): Hono {
   const api = new Hono();

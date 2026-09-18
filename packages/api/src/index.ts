@@ -9,6 +9,8 @@ export type { BudgetLimits, BudgetDecision } from "./budget.js";
 export { TraceHub, FLOWS, STEPS } from "./trace.js";
 export type { Trace, Step, StepId, FlowId } from "./trace.js";
 export { DownstreamPayer } from "./payer.js";
+export { TrustEngine, computeRecord, verdictFor, DEFAULT_POLICY, MIN_OBSERVATIONS } from "./trust.js";
+export type { Outcome, TrustRecord, Verdict, TrustPolicy } from "./trust.js";
 export type { PayOutcome } from "./payer.js";
 export { CatalogIngester, CURATED, isAllowlisted, probeService } from "./catalog.js";
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";

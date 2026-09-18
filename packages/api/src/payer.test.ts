@@ -4,6 +4,7 @@ import { loadConfig, TESTNET } from "@sentry402/shared";
 import { Store } from "./db.js";
 import { BudgetGuard } from "./budget.js";
 import { TraceHub } from "./trace.js";
+import { TrustEngine, type Outcome } from "./trust.js";
 import { DownstreamPayer } from "./payer.js";
 import type { CuratedService } from "./catalog.js";
 
@@ -44,6 +45,7 @@ describe("DownstreamPayer construction", () => {
       store,
       new BudgetGuard(store),
       new TraceHub(store, "testnet"),
+      new TrustEngine(store),
     );
 
   it("derives the payer address from the mnemonic", () => {
@@ -69,16 +71,18 @@ describe("DownstreamPayer.pay", () => {
   let store: Store;
   let guard: BudgetGuard;
   let hub: TraceHub;
+  let trust: TrustEngine;
 
   beforeEach(() => {
     store = new Store(":memory:");
     guard = new BudgetGuard(store);
     hub = new TraceHub(store, "testnet");
+    trust = new TrustEngine(store);
   });
 
   /** Replaces the payment-wrapped fetch so no real payment is attempted. */
   function payerWith(impl: typeof fetch) {
-    const payer = new DownstreamPayer(configFor(), store, guard, hub);
+    const payer = new DownstreamPayer(configFor(), store, guard, hub, trust);
     Reflect.set(payer, "paidFetch", impl);
     return payer;
   }
@@ -221,8 +225,8 @@ describe("DownstreamPayer.pay", () => {
     expect(guard.status().committedTodayBase).toBe(5_000);
   });
 
-  it("records trust as skipped rather than inventing a score", async () => {
-    // Phase 4 supplies the real score. Until then the UI must not show one.
+  it("marks trust as skipped while a service is unrated", async () => {
+    // Unrated is not a refusal, but the UI must not show a score that does not exist.
     const payer = payerWith(
       async () =>
         new Response("{}", {
@@ -232,9 +236,9 @@ describe("DownstreamPayer.pay", () => {
     );
     await payer.pay(service, 5_000, null);
 
-    const trust = hub.recent(1)[0]!.steps.find((s) => s.id === "trust")!;
-    expect(trust.state).toBe("skipped");
-    expect(trust.detail).toMatch(/Phase 4/);
+    const step = hub.recent(1)[0]!.steps.find((s) => s.id === "trust")!;
+    expect(step.state).toBe("skipped");
+    expect(step.detail).toMatch(/unrated/);
   });
 
   it("returns a non-JSON body as text rather than failing", async () => {
@@ -279,5 +283,145 @@ describe("DownstreamPayer.pay", () => {
     const paid = outcomes.filter((o) => o.ok);
     expect(paid.length).toBeLessThanOrEqual(5);
     expect(guard.status().committedTodayBase).toBeLessThanOrEqual(500_000);
+  });
+});
+
+describe("trust gate enforcement at the payment layer", () => {
+  let store: Store;
+  let guard: BudgetGuard;
+  let hub: TraceHub;
+  let trust: TrustEngine;
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+    guard = new BudgetGuard(store);
+    hub = new TraceHub(store, "testnet");
+    trust = new TrustEngine(store);
+  });
+
+  function payerWith(impl: typeof fetch) {
+    const payer = new DownstreamPayer(configFor(), store, guard, hub, trust);
+    Reflect.set(payer, "paidFetch", impl);
+    return payer;
+  }
+
+  const settlementHeader = (txId: string) =>
+    Buffer.from(JSON.stringify({ success: true, transaction: txId })).toString("base64");
+
+  /** Poisons a service's record so the gate refuses it. */
+  const poison = (url: string, n = 20) => {
+    for (let i = 0; i < n; i += 1) {
+      const o: Outcome = {
+        resourceUrl: url,
+        at: new Date(Date.now() - i * 1000).toISOString(),
+        ok: false,
+        httpStatus: 200,
+        latencyMs: 300,
+        settled: true,
+        schemaOk: null,
+        coldStart: false,
+        failureReason: "took payment, returned nothing",
+      };
+      trust.record(o);
+    }
+  };
+
+  it("blocks the payment before any network call", async () => {
+    // Asserted at the payment layer, not the UI: a gate that only colours a badge
+    // is not a gate.
+    poison(service.url);
+    let called = false;
+    const payer = payerWith(async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    });
+
+    const outcome = await payer.pay(service, 5_000, null);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.refusedByTrust).toBe(true);
+    expect(called).toBe(false);
+  });
+
+  it("reserves no budget when trust refuses", async () => {
+    poison(service.url);
+    const payer = payerWith(async () => new Response("{}", { status: 200 }));
+    await payer.pay(service, 5_000, null);
+    expect(guard.status().committedTodayBase).toBe(0);
+  });
+
+  it("marks trust as the step where it stopped", async () => {
+    poison(service.url);
+    const payer = payerWith(async () => new Response("{}", { status: 200 }));
+    await payer.pay(service, 5_000, null);
+
+    const trace = hub.recent(1)[0]!;
+    expect(trace.state).toBe("failed");
+    expect(trace.steps.find((s) => s.id === "trust")!.state).toBe("failed");
+    expect(trace.steps.find((s) => s.id === "budget")!.state).toBe("skipped");
+    expect(trace.steps.find((s) => s.id === "request")!.state).toBe("skipped");
+  });
+
+  it("records an outcome for every completed call, so the score is built from real traffic", async () => {
+    const payer = payerWith(
+      async () =>
+        new Response(JSON.stringify({ ok: 1 }), {
+          status: 200,
+          headers: { "x-payment-response": settlementHeader("TXG1") },
+        }),
+    );
+    await payer.pay(service, 5_000, null);
+    expect(store.outcomeCount(service.url)).toBe(1);
+    expect(store.outcomes(service.url)[0]!.ok).toBe(true);
+  });
+
+  it("records a failure when the downstream is unreachable", async () => {
+    const payer = payerWith(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    await payer.pay(service, 5_000, null);
+
+    const recorded = store.outcomes(service.url)[0]!;
+    expect(recorded.ok).toBe(false);
+    // No money moved, so this must not be scored as paid-for-nothing.
+    expect(recorded.settled).toBe(false);
+  });
+
+  it("treats a paid empty body as a delivery failure, not a success", async () => {
+    // The operator paid and the agent got nothing usable.
+    const payer = payerWith(
+      async () =>
+        new Response("   ", {
+          status: 200,
+          headers: { "x-payment-response": settlementHeader("TXG2") },
+        }),
+    );
+
+    const outcome = await payer.pay(service, 5_000, null);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toMatch(/empty body/);
+
+    const recorded = store.outcomes(service.url)[0]!;
+    expect(recorded.ok).toBe(false);
+    expect(recorded.settled).toBe(true);
+
+    const trace = hub.recent(1)[0]!;
+    expect(trace.steps.find((s) => s.id === "deliver")!.state).toBe("failed");
+  });
+
+  it("degrades a service to refused after enough paid-nothing calls", async () => {
+    // End to end: real outcomes accumulate and eventually close the gate.
+    const payer = payerWith(
+      async () =>
+        new Response("", {
+          status: 200,
+          headers: { "x-payment-response": settlementHeader("TXG3") },
+        }),
+    );
+
+    for (let i = 0; i < 6; i += 1) await payer.pay(service, 5_000, null);
+
+    expect(trust.recordFor(service.url).verdict).toBe("refuse");
+    const blocked = await payer.pay(service, 5_000, null);
+    expect(blocked.refusedByTrust).toBe(true);
   });
 });

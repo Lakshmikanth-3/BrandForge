@@ -19,9 +19,12 @@ import type { Store } from "./db.js";
 import type { BudgetGuard } from "./budget.js";
 import type { CuratedService } from "./catalog.js";
 import type { TraceHub } from "./trace.js";
+import type { TrustEngine } from "./trust.js";
 
 export interface PayOutcome {
   ok: boolean;
+  /** Set when the trust gate refused this service. */
+  refusedByTrust?: boolean;
   status: number | null;
   /** The downstream service's response body, verbatim when it parsed as JSON. */
   result: unknown;
@@ -88,6 +91,7 @@ export class DownstreamPayer {
     private readonly store: Store,
     private readonly guard: BudgetGuard,
     private readonly hub: TraceHub,
+    private readonly trust: TrustEngine,
   ) {
     this.network = config.network;
     // mnemonicToSecretKey gives the 64-byte seed||pubkey form the signer wants.
@@ -111,9 +115,9 @@ export class DownstreamPayer {
   /**
    * Pays a curated service and returns its response.
    *
-   * `trust` is a placeholder step here: Phase 4 supplies a real score. It is
-   * recorded as skipped rather than passed, so the UI never shows a score that
-   * does not exist yet.
+   * The trust gate runs before the budget guard and before any network call, so a
+   * refusal costs nothing. Enforcement is here at the payment layer rather than in
+   * the UI: a gate that only colours a badge is not a gate.
    */
   async pay(
     service: CuratedService,
@@ -141,7 +145,28 @@ export class DownstreamPayer {
     this.hub.begin(id, "resolve");
     this.hub.end(id, "resolve", "ok", `${service.method} ${new URL(service.url).host}`);
 
-    this.hub.end(id, "trust", "skipped", "trust engine lands in Phase 4");
+    this.hub.begin(id, "trust");
+    const gate = this.trust.gate(service.url);
+    if (!gate.allow) {
+      this.hub.fail(id, "trust", gate.reason);
+      return {
+        ok: false,
+        refusedByTrust: true,
+        status: null,
+        result: null,
+        txId: null,
+        amountBase: null,
+        latencyMs: Date.now() - startedAt,
+        traceId: id,
+        error: `refused by trust gate: ${gate.reason}`,
+      };
+    }
+    this.hub.end(
+      id,
+      "trust",
+      gate.record.verdict === "unrated" ? "skipped" : "ok",
+      gate.reason,
+    );
 
     this.hub.begin(id, "budget");
     const decision = this.guard.reserve({
@@ -176,7 +201,17 @@ export class DownstreamPayer {
     } catch (err) {
       // Nothing settled, so the headroom goes back.
       this.guard.release(decision.reservationId);
-      return fail("request", err instanceof Error ? err.message : "downstream unreachable");
+      const reason = err instanceof Error ? err.message : "downstream unreachable";
+      // The payment wrapper already retried internally; reaching here means the
+      // service failed warm as well, so this is a real failure, not a cold start.
+      this.recordOutcome(service.url, {
+        ok: false,
+        httpStatus: null,
+        latencyMs: Date.now() - startedAt,
+        settled: false,
+        failureReason: reason,
+      });
+      return fail("request", reason);
     }
 
     this.hub.end(id, "request", "ok", `HTTP ${res.status}`);
@@ -197,10 +232,18 @@ export class DownstreamPayer {
         "ok",
         livePrice !== null ? `asked ${(livePrice / 1e6).toFixed(6)} USDC` : "402 returned",
       );
-      return fail(
-        "payment",
-        settlement?.errorReason ?? `downstream returned HTTP ${res.status} after payment attempt`,
-      );
+      const reason =
+        settlement?.errorReason ?? `downstream returned HTTP ${res.status} after payment attempt`;
+      // settled here means money moved and nothing usable came back, which the
+      // scoring model weights hardest.
+      this.recordOutcome(service.url, {
+        ok: false,
+        httpStatus: res.status,
+        latencyMs: Date.now() - startedAt,
+        settled: txId !== null,
+        failureReason: reason,
+      });
+      return fail("payment", reason);
     }
 
     this.hub.end(id, "challenge", "ok", "requirements satisfied by the payer");
@@ -245,9 +288,34 @@ export class DownstreamPayer {
       result = text;
     }
 
+    // A paid response with an empty body is a delivery failure, not a success:
+    // the operator paid and the agent got nothing usable.
+    const delivered = text.trim().length > 0;
+    this.recordOutcome(service.url, {
+      ok: delivered,
+      httpStatus: res.status,
+      latencyMs,
+      settled: txId !== null,
+      failureReason: delivered ? null : "paid response had an empty body",
+    });
+
     this.hub.begin(id, "deliver");
-    this.hub.end(id, "deliver", "ok", `${text.length} bytes returned`);
-    this.hub.complete(id);
+    if (delivered) {
+      this.hub.end(id, "deliver", "ok", `${text.length} bytes returned`);
+      this.hub.complete(id);
+    } else {
+      this.hub.fail(id, "deliver", "paid response had an empty body");
+      return {
+        ok: false,
+        status: res.status,
+        result: null,
+        txId,
+        amountBase: advertisedAmountBase,
+        latencyMs,
+        traceId: id,
+        error: "downstream took payment and returned an empty body",
+      };
+    }
 
     return {
       ok: true,
@@ -259,5 +327,35 @@ export class DownstreamPayer {
       traceId: id,
       error: null,
     };
+  }
+
+  /** Appends one observation for the trust engine. Never throws into a payment. */
+  private recordOutcome(
+    resourceUrl: string,
+    o: {
+      ok: boolean;
+      httpStatus: number | null;
+      latencyMs: number | null;
+      settled: boolean;
+      failureReason: string | null;
+    },
+  ): void {
+    try {
+      this.trust.record({
+        resourceUrl,
+        at: new Date().toISOString(),
+        ok: o.ok,
+        httpStatus: o.httpStatus,
+        latencyMs: o.latencyMs,
+        settled: o.settled,
+        // Schema checking needs the advertised output schema from discovery; not
+        // every curated service publishes one, so this stays null until it does.
+        schemaOk: null,
+        coldStart: false,
+        failureReason: o.failureReason,
+      });
+    } catch {
+      // A scoring write must never fail a payment that already happened.
+    }
   }
 }

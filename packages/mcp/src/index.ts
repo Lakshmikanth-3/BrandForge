@@ -26,6 +26,7 @@ import {
   DownstreamPayer,
   Store,
   TraceHub,
+  TrustEngine,
   type CuratedService,
 } from "@sentry402/api";
 
@@ -46,7 +47,8 @@ try {
 const store = new Store(process.env["SENTRY402_DB"] ?? "data/sentry402.sqlite");
 const guard = new BudgetGuard(store);
 const hub = new TraceHub(store, config.network.name);
-const payer = new DownstreamPayer(config, store, guard, hub);
+const trust = new TrustEngine(store);
+const payer = new DownstreamPayer(config, store, guard, hub, trust);
 
 /**
  * Advertised price per curated service, in USDC base units.
