@@ -118,6 +118,29 @@ CREATE TABLE IF NOT EXISTS services (
 );
 CREATE INDEX IF NOT EXISTS services_allowlisted ON services (allowlisted, active);
 
+-- Every intent to spend, reserved BEFORE the payment is attempted. Reserving
+-- first is what makes concurrent calls unable to race past a limit: the check
+-- and the reservation happen in one transaction.
+CREATE TABLE IF NOT EXISTS spend_log (
+  id          TEXT PRIMARY KEY,
+  merchant    TEXT NOT NULL,
+  route       TEXT NOT NULL,
+  amount_base INTEGER NOT NULL,
+  -- reserved -> settled (payment went through) | released (it did not)
+  state       TEXT NOT NULL CHECK (state IN ('reserved','settled','released')),
+  tx_id       TEXT,
+  created_at  TEXT NOT NULL,
+  day         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS spend_log_day ON spend_log (day, state);
+CREATE INDEX IF NOT EXISTS spend_log_merchant ON spend_log (merchant, day, state);
+
+-- Operator settings, including the kill switch.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- Cursor for the indexer settlement listener, so a restart does not rescan
 -- from genesis and does not miss rounds.
 CREATE TABLE IF NOT EXISTS listener_state (
@@ -379,6 +402,123 @@ export class Store {
         new Date().toISOString(),
         resourceUrl,
       );
+  }
+
+  getSetting(key: string): string | null {
+    const row = this.db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? String(row["value"]) : null;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO settings (key, value) VALUES (?,?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, value);
+  }
+
+  /** Reserved plus settled spend for a UTC day. Released reservations do not count. */
+  committedToday(day: string, merchant?: string): number {
+    const sql =
+      `SELECT COALESCE(SUM(amount_base),0) AS total FROM spend_log
+        WHERE day = ? AND state IN ('reserved','settled')` +
+      (merchant ? ` AND merchant = ?` : ``);
+    const row = (
+      merchant
+        ? this.db.prepare(sql).get(day, merchant)
+        : this.db.prepare(sql).get(day)
+    ) as Record<string, unknown>;
+    return Number(row["total"] ?? 0);
+  }
+
+  /**
+   * Checks both daily caps and writes the reservation inside one transaction.
+   *
+   * BEGIN IMMEDIATE takes the write lock up front, so two concurrent callers
+   * cannot both read the same headroom and both reserve against it. Without this
+   * the guard would be advisory rather than enforcing.
+   */
+  tryReserveSpend(args: {
+    id: string;
+    merchant: string;
+    route: string;
+    amountBase: number;
+    day: string;
+    perDayBase: number;
+    perMerchantPerDayBase: number;
+  }):
+    | { ok: true; id: string }
+    | { ok: false; breached: "per_day" | "per_merchant_per_day"; committed: number } {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const dayTotal = this.committedToday(args.day);
+      if (dayTotal + args.amountBase > args.perDayBase) {
+        this.db.exec("ROLLBACK");
+        return { ok: false, breached: "per_day", committed: dayTotal };
+      }
+
+      const merchantTotal = this.committedToday(args.day, args.merchant);
+      if (merchantTotal + args.amountBase > args.perMerchantPerDayBase) {
+        this.db.exec("ROLLBACK");
+        return { ok: false, breached: "per_merchant_per_day", committed: merchantTotal };
+      }
+
+      this.db
+        .prepare(
+          `INSERT INTO spend_log
+             (id, merchant, route, amount_base, state, tx_id, created_at, day)
+           VALUES (?,?,?,?, 'reserved', NULL, ?, ?)`,
+        )
+        .run(
+          args.id,
+          args.merchant,
+          args.route,
+          args.amountBase,
+          new Date().toISOString(),
+          args.day,
+        );
+      this.db.exec("COMMIT");
+      return { ok: true, id: args.id };
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  resolveSpend(id: string, state: "settled" | "released", txId: string | null): void {
+    // Only a reservation can be resolved, so a duplicate settle is a no-op
+    // rather than double-counting or resurrecting released headroom.
+    this.db
+      .prepare(
+        `UPDATE spend_log SET state = ?, tx_id = ? WHERE id = ? AND state = 'reserved'`,
+      )
+      .run(state, txId, id);
+  }
+
+  spendLog(limit = 100): {
+    id: string;
+    merchant: string;
+    route: string;
+    amountBase: number;
+    state: string;
+    txId: string | null;
+    createdAt: string;
+  }[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM spend_log ORDER BY created_at DESC LIMIT ?`)
+      .all(Math.min(limit, 500)) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: String(r["id"]),
+      merchant: String(r["merchant"]),
+      route: String(r["route"]),
+      amountBase: Number(r["amount_base"]),
+      state: String(r["state"]),
+      txId: r["tx_id"] === null ? null : String(r["tx_id"]),
+      createdAt: String(r["created_at"]),
+    }));
   }
 
   getCursor(key: string): string | null {
