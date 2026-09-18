@@ -119,6 +119,34 @@ CREATE TABLE IF NOT EXISTS services (
 );
 CREATE INDEX IF NOT EXISTS services_allowlisted ON services (allowlisted, active);
 
+-- Raw observations the trust engine scores. Append-only: a score is only as
+-- trustworthy as the record it derives from, so outcomes are never rewritten.
+CREATE TABLE IF NOT EXISTS outcomes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource_url   TEXT NOT NULL,
+  at             TEXT NOT NULL,
+  ok             INTEGER NOT NULL,
+  http_status    INTEGER,
+  latency_ms     INTEGER,
+  settled        INTEGER NOT NULL,
+  schema_ok      INTEGER,
+  cold_start     INTEGER NOT NULL,
+  failure_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS outcomes_url_at ON outcomes (resource_url, at DESC);
+
+-- Every time the bridge routed around a refused service, and why.
+CREATE TABLE IF NOT EXISTS substitutions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  at           TEXT NOT NULL,
+  refused_url  TEXT NOT NULL,
+  refused_score REAL,
+  chosen_url   TEXT,
+  chosen_score REAL,
+  reason       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS substitutions_at ON substitutions (at DESC);
+
 -- Every intent to spend, reserved BEFORE the payment is attempted. Reserving
 -- first is what makes concurrent calls unable to race past a limit: the check
 -- and the reservation happen in one transaction.
@@ -406,6 +434,99 @@ export class Store {
         new Date().toISOString(),
         resourceUrl,
       );
+  }
+
+  putOutcome(o: {
+    resourceUrl: string;
+    at: string;
+    ok: boolean;
+    httpStatus: number | null;
+    latencyMs: number | null;
+    settled: boolean;
+    schemaOk: boolean | null;
+    coldStart: boolean;
+    failureReason: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO outcomes
+           (resource_url, at, ok, http_status, latency_ms, settled, schema_ok,
+            cold_start, failure_reason)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        o.resourceUrl,
+        o.at,
+        o.ok ? 1 : 0,
+        o.httpStatus,
+        o.latencyMs,
+        o.settled ? 1 : 0,
+        o.schemaOk === null ? null : o.schemaOk ? 1 : 0,
+        o.coldStart ? 1 : 0,
+        o.failureReason,
+      );
+  }
+
+  /** Newest first, which is the order the scoring model expects. */
+  outcomes(resourceUrl: string, limit = 50) {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM outcomes WHERE resource_url = ? ORDER BY at DESC, id DESC LIMIT ?`,
+      )
+      .all(resourceUrl, Math.min(limit, 500)) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      resourceUrl: String(r["resource_url"]),
+      at: String(r["at"]),
+      ok: Number(r["ok"]) === 1,
+      httpStatus: r["http_status"] === null ? null : Number(r["http_status"]),
+      latencyMs: r["latency_ms"] === null ? null : Number(r["latency_ms"]),
+      settled: Number(r["settled"]) === 1,
+      schemaOk: r["schema_ok"] === null ? null : Number(r["schema_ok"]) === 1,
+      coldStart: Number(r["cold_start"]) === 1,
+      failureReason: r["failure_reason"] === null ? null : String(r["failure_reason"]),
+    }));
+  }
+
+  outcomeCount(resourceUrl?: string): number {
+    const row = (
+      resourceUrl
+        ? this.db
+            .prepare(`SELECT COUNT(*) AS n FROM outcomes WHERE resource_url = ?`)
+            .get(resourceUrl)
+        : this.db.prepare(`SELECT COUNT(*) AS n FROM outcomes`).get()
+    ) as Record<string, unknown>;
+    return Number(row["n"] ?? 0);
+  }
+
+  putSubstitution(s: {
+    at: string;
+    refusedUrl: string;
+    refusedScore: number | null;
+    chosenUrl: string | null;
+    chosenScore: number | null;
+    reason: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO substitutions
+           (at, refused_url, refused_score, chosen_url, chosen_score, reason)
+         VALUES (?,?,?,?,?,?)`,
+      )
+      .run(s.at, s.refusedUrl, s.refusedScore, s.chosenUrl, s.chosenScore, s.reason);
+  }
+
+  substitutions(limit = 50) {
+    const rows = this.db
+      .prepare(`SELECT * FROM substitutions ORDER BY at DESC, id DESC LIMIT ?`)
+      .all(Math.min(limit, 200)) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      at: String(r["at"]),
+      refusedUrl: String(r["refused_url"]),
+      refusedScore: r["refused_score"] === null ? null : Number(r["refused_score"]),
+      chosenUrl: r["chosen_url"] === null ? null : String(r["chosen_url"]),
+      chosenScore: r["chosen_score"] === null ? null : Number(r["chosen_score"]),
+      reason: String(r["reason"]),
+    }));
   }
 
   getSetting(key: string): string | null {
