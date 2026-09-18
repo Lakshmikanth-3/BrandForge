@@ -2,7 +2,16 @@ import { useCallback, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FlowVisualiser } from "./FlowVisualiser";
 import { useLive } from "./useLive";
-import type { Budget, Receipt, Service, Substitution, Trace, TrustRecord } from "./types";
+import type {
+  Budget,
+  ReconcileReport,
+  Receipt,
+  Service,
+  Substitution,
+  Trace,
+  TrustRecord,
+  VerificationReport,
+} from "./types";
 
 /**
  * The config that works today. It points at a local build rather than an npm
@@ -28,6 +37,9 @@ export default function App() {
     budget,
     services,
     substitutions,
+    verification,
+    reconcile,
+    refreshProofs,
     streamState,
     sendUnpaidRequest,
   } = useLive();
@@ -210,6 +222,37 @@ export default function App() {
         <ReceiptStream receipts={receipts} />
       </section>
 
+      <section>
+        <div className="sec-head">
+          <h3>Verification</h3>
+          <div className="sec-actions">
+            {verification ? (
+              <span className="dim mono">
+                {verification.passing} passing · {verification.failing} failing
+              </span>
+            ) : null}
+            <button className="btn" onClick={() => void refreshProofs()}>
+              re-check
+            </button>
+          </div>
+        </div>
+        <p className="note">
+          Every row is read live from the source that would disprove it. Failing rows are
+          shown as failing — a panel that can show red is the only evidence that the green
+          rows mean anything. Rows marked <code>manual</code> have no machine-readable
+          source, so they are not claimed as passing.
+        </p>
+        <VerificationPanel report={verification} />
+      </section>
+
+      <section>
+        <div className="sec-head">
+          <h3>Reconciliation</h3>
+          <span className="dim mono">receipts against the chain, both directions</span>
+        </div>
+        <ReconcilePanel report={reconcile} />
+      </section>
+
       <footer>
         <span className="mono dim">
           Every number on this page is read live from the API. No mock data, at any time.
@@ -271,6 +314,135 @@ function ServiceTable({ services }: { services: Service[] }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function VerificationPanel({ report }: { report: VerificationReport | null }) {
+  const [showRaw, setShowRaw] = useState(false);
+
+  if (!report) {
+    return <p className="note dim">/api/verification did not respond.</p>;
+  }
+
+  return (
+    <div className="panel">
+      <div className="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>status</th>
+              <th>claim</th>
+              <th>what the source said</th>
+              <th>check it</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.rows.map((r) => (
+              <tr key={r.id}>
+                <td>
+                  <span className={`vstat vstat-${r.status}`}>{r.status}</span>
+                </td>
+                <td className="summary">{r.claim}</td>
+                <td className="dim summary">{r.detail}</td>
+                <td>
+                  {r.link ? (
+                    <a href={r.link} target="_blank" rel="noreferrer">
+                      {r.external ? "source" : "endpoint"}
+                    </a>
+                  ) : (
+                    <span className="dim">\u2014</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="raw-toggle">
+        <button className="btn" onClick={() => setShowRaw((v) => !v)}>
+          {showRaw ? "hide" : "show"} raw facilitator data
+        </button>
+        <span className="dim mono">checked {new Date(report.checkedAt).toLocaleTimeString()}</span>
+      </div>
+
+      {showRaw ? (
+        <pre className="snippet raw">
+          {JSON.stringify(
+            { merchantRecord: report.merchantRecord, bazaarEntries: report.bazaarEntries },
+            null,
+            2,
+          )}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+function ReconcilePanel({ report }: { report: ReconcileReport | null }) {
+  if (!report) {
+    return <p className="note dim">/api/reconcile did not respond.</p>;
+  }
+
+  return (
+    <div className="panel budget">
+      <div className="budget-row">
+        <div>
+          <span className="counter-label">on-chain transfers</span>
+          <span className="counter-value num">{report.chainTransfers}</span>
+        </div>
+        <div>
+          <span className="counter-label">receipts</span>
+          <span className="counter-value num">{report.receipts}</span>
+        </div>
+        <div>
+          <span className="counter-label">matched</span>
+          <span className="counter-value num">{report.matched}</span>
+        </div>
+        <div>
+          <span className="counter-label">result</span>
+          <span
+            className={`counter-value ${report.clean ? "ok-text" : "bad-text"}`}
+            style={{ fontSize: 14 }}
+          >
+            {report.error ? "unverified" : report.clean ? "clean" : "discrepancies"}
+          </span>
+        </div>
+      </div>
+
+      {report.error ? (
+        <p className="note bad-text budget-empty">
+          Could not verify: {report.error}. An unreachable indexer proves nothing, so this
+          is not a clean result.
+        </p>
+      ) : report.discrepancies.length === 0 ? (
+        <p className="note dim budget-empty">
+          Every receipt has an on-chain transaction and every on-chain transfer touching our
+          addresses has a receipt. No phantom rows in either direction.
+        </p>
+      ) : (
+        <div className="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>kind</th>
+                <th>tx</th>
+                <th>detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.discrepancies.map((d) => (
+                <tr key={`${d.kind}-${d.txId}`}>
+                  <td className="bad-text">{d.kind}</td>
+                  <td className="dim">{d.txId.slice(0, 12)}...</td>
+                  <td className="dim summary">{d.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

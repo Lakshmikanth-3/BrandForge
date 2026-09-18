@@ -146,3 +146,40 @@ export interface Substitution {
   chosenScore: number | null;
   reason: string;
 }
+
+export type CheckStatus = "pass" | "fail" | "pending" | "manual";
+
+export interface VerificationRow {
+  id: string;
+  claim: string;
+  status: CheckStatus;
+  detail: string;
+  link: string | null;
+  /** True when the row was read from a third party rather than from us. */
+  external: boolean;
+}
+
+export interface VerificationReport {
+  network: string;
+  checkedAt: string;
+  rows: VerificationRow[];
+  passing: number;
+  failing: number;
+  merchantRecord: unknown;
+  bazaarEntries: unknown[];
+}
+
+export interface ReconcileReport {
+  network: string;
+  checkedAt: string;
+  chainTransfers: number;
+  receipts: number;
+  matched: number;
+  clean: boolean;
+  error: string | null;
+  discrepancies: {
+    kind: string;
+    txId: string;
+    detail: string;
+  }[];
+}

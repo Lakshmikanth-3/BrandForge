@@ -746,3 +746,54 @@ footer {
   font-size: 10px;
   letter-spacing: 0.07em;
 }
+
+/* -- verification -- */
+
+.vstat {
+  display: inline-block;
+  font: 10px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 4px 6px;
+  min-width: 58px;
+  text-align: center;
+}
+
+.vstat-pass {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, var(--line));
+}
+/* Never softened. A panel that can show red is why the green rows are credible. */
+.vstat-fail {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.vstat-pending {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--line));
+}
+.vstat-manual {
+  color: var(--dim);
+  border-style: dashed;
+}
+
+.raw-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 11px;
+  border-top: 1px solid var(--line);
+}
+
+.raw {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  max-height: 340px;
+  overflow: auto;
+  font-size: 11px;
+}

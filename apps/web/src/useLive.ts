@@ -8,6 +8,8 @@ import type {
   StreamState,
   Substitution,
   Trace,
+  VerificationReport,
+  ReconcileReport,
 } from "./types";
 
 /**
@@ -25,6 +27,8 @@ export function useLive() {
   const [budget, setBudget] = useState<Budget | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [substitutions, setSubstitutions] = useState<Substitution[]>([]);
+  const [verification, setVerification] = useState<VerificationReport | null>(null);
+  const [reconcile, setReconcile] = useState<ReconcileReport | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [lastPing, setLastPing] = useState<number | null>(null);
 
@@ -58,6 +62,26 @@ export function useLive() {
       // failure. Blanking real numbers on a transient error is worse.
     }
   }, []);
+
+  // Verification and reconciliation are slower, external calls. They load once and
+  // refresh on demand rather than on the stream tick.
+  const refreshProofs = useCallback(async () => {
+    try {
+      const [v, rec] = await Promise.all([
+        fetch("/api/verification").then((x) => x.json() as Promise<VerificationReport>),
+        // 409 is a real answer here: a dirty reconciliation is still a report.
+        fetch("/api/reconcile").then((x) => x.json() as Promise<ReconcileReport>),
+      ]);
+      setVerification(v);
+      setReconcile(rec);
+    } catch {
+      // Leave the last known report; the rows carry their own failure states.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshProofs();
+  }, [refreshProofs]);
 
   useEffect(() => {
     fetch("/api/flow")
@@ -140,6 +164,9 @@ export function useLive() {
     budget,
     services,
     substitutions,
+    verification,
+    reconcile,
+    refreshProofs,
     streamState,
     lastPing,
     sendUnpaidRequest,
