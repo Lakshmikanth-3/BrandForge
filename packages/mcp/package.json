@@ -4,5 +4,14 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
-  "dependencies": { "@sentry402/shared": "*" }
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "@sentry402/api": "*",
+    "@sentry402/shared": "*",
+    "dotenv": "^16.4.7",
+    "zod": "^3.25.76"
+  },
+  "bin": {
+    "sentry402-mcp": "./dist/index.js"
+  }
 }
