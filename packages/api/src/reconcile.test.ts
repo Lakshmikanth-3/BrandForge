@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { TESTNET } from "@sentry402/shared";
 import { Store } from "./db.js";
 import { Reconciler, receiptsAsCsv, type ChainTransfer } from "./reconcile.js";
+import { SettlementListener } from "./listener.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createRequire } from "node:module";
 
 const MERCHANT = "ZMFK2OI7ZBD2U27ISERZC4S6LKM6WMFJPZQ4MYNJDZ2VNBNMBA67RA22AA";
 const PAYER = "G3YVTPURK6VFSM5CXEH7QFTZXLCXBJL6UMAIUUYJO4P2XF3MHQ4FUHYYB4";
@@ -267,5 +272,179 @@ describe("receipt export", () => {
     const rows = receiptsAsCsv(store, TESTNET.explorerTxBase).trim().split("\n").slice(1);
     expect(rows).toHaveLength(3);
     expect(new Set(rows.map((r) => r.split(",")[0])).size).toBe(3);
+  });
+});
+
+describe("schema migration", () => {
+  it("adds a column missing from a database created by an older build", () => {
+    // CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so it silently
+    // skips new columns. This is not theoretical: adding traces.flow left deployed
+    // databases without it, and the first real paid call failed to persist its
+    // trace AFTER the payment had settled.
+    const file = join(
+      mkdtempSync(join(tmpdir(), "sentry402-migrate-")),
+      "old.sqlite",
+    );
+
+    // Build the pre-flow schema by hand, the way the old release left it.
+    const require_ = createRequire(import.meta.url);
+    const { DatabaseSync } = require_("node:sqlite") as {
+      DatabaseSync: new (p: string) => { exec(sql: string): void; close(): void };
+    };
+    const raw = new DatabaseSync(file);
+    raw.exec(`CREATE TABLE traces (
+      id TEXT PRIMARY KEY, route TEXT NOT NULL, network TEXT NOT NULL,
+      state TEXT NOT NULL, payer TEXT, tx_id TEXT, total_ms INTEGER,
+      created_at TEXT NOT NULL, steps_json TEXT NOT NULL)`);
+    raw.close();
+
+    const store = new Store(file);
+    expect(store.columnsOf("traces")).toContain("flow");
+
+    // And it can actually be written to now.
+    store.saveTrace({
+      id: "T1",
+      flow: "bridged",
+      route: "folks_tvl",
+      network: "testnet",
+      state: "ok",
+      payer: null,
+      txId: null,
+      totalMs: 10,
+      createdAt: "2026-09-18T00:00:00.000Z",
+      steps: [],
+    });
+    expect(store.recentTraces(1)).toHaveLength(1);
+    store.close();
+  });
+
+  it("is idempotent across repeated opens", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sentry402-migrate-")), "db.sqlite");
+    new Store(file).close();
+    const second = new Store(file);
+    expect(second.columnsOf("traces").filter((c) => c === "flow")).toHaveLength(1);
+    second.close();
+  });
+});
+
+describe("settlement listener, both directions", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+  });
+
+  const txn = (over: Record<string, unknown> = {}) => ({
+    id: "TXL1",
+    sender: PAYER,
+    "confirmed-round": 500,
+    "round-time": 1_789_000_000,
+    "asset-transfer-transaction": {
+      "asset-id": Number(TESTNET.usdcAsaId),
+      amount: 5_000,
+      receiver: MERCHANT,
+    },
+    ...over,
+  });
+
+  const indexer = (byAddress: Record<string, unknown[]>): typeof fetch =>
+    (async (input: string | URL | Request) => {
+      const url = String(input);
+      const key = Object.keys(byAddress).find((a) => url.includes(a));
+      return Response.json({ transactions: key ? byAddress[key] : [] });
+    }) as unknown as typeof fetch;
+
+  it("records an outbound payment the request path could not key a receipt for", async () => {
+    // Exactly what happened on the first real bridged call: the downstream returned
+    // no transaction id, so only the chain knows about the payment.
+    const listener = new SettlementListener(
+      TESTNET,
+      store,
+      MERCHANT,
+      "/v1/orchestrate",
+      PAYER,
+      indexer({
+        [PAYER]: [
+          txn({ id: "TXOUT", sender: PAYER, "asset-transfer-transaction": {
+            "asset-id": Number(TESTNET.usdcAsaId), amount: 5_000, receiver: STRANGER } }),
+        ],
+      }),
+    );
+
+    const result = await listener.poll();
+    expect(result.written).toBe(1);
+
+    const receipts = store.receipts({ direction: "out" });
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      txId: "TXOUT",
+      direction: "out",
+      payer: PAYER,
+      payee: STRANGER,
+      amountBase: 5_000,
+    });
+    expect(receipts[0]!.confirmedRound).toBe(500);
+  });
+
+  it("records inbound payments to the merchant", async () => {
+    const listener = new SettlementListener(
+      TESTNET,
+      store,
+      MERCHANT,
+      "/v1/orchestrate",
+      PAYER,
+      indexer({ [MERCHANT]: [txn({ id: "TXIN", sender: STRANGER })] }),
+    );
+    await listener.poll();
+    expect(store.receipts({ direction: "in" })).toHaveLength(1);
+  });
+
+  it("does not double-count a self-payment as both directions", async () => {
+    // The same transaction appears in both accounts' histories.
+    const self = txn({ id: "TXSELF", sender: PAYER });
+    const listener = new SettlementListener(
+      TESTNET,
+      store,
+      MERCHANT,
+      "/v1/orchestrate",
+      PAYER,
+      indexer({ [MERCHANT]: [self], [PAYER]: [self] }),
+    );
+    await listener.poll();
+    const all = store.receipts({ limit: 10 });
+    expect(all).toHaveLength(1);
+    // Paying ourselves is money received.
+    expect(all[0]!.direction).toBe("in");
+  });
+
+  it("is idempotent across repeated polls", async () => {
+    const listener = new SettlementListener(
+      TESTNET,
+      store,
+      MERCHANT,
+      "/v1/orchestrate",
+      PAYER,
+      indexer({ [MERCHANT]: [txn({ id: "TXIN", sender: STRANGER })] }),
+    );
+    await listener.poll();
+    const second = await listener.poll();
+    expect(second.written).toBe(0);
+    expect(store.receipts({ limit: 10 })).toHaveLength(1);
+  });
+
+  it("surfaces an outbound indexer failure instead of reporting success", async () => {
+    const listener = new SettlementListener(
+      TESTNET,
+      store,
+      MERCHANT,
+      "/v1/orchestrate",
+      PAYER,
+      (async (input: string | URL | Request) => {
+        if (String(input).includes(PAYER)) return new Response("no", { status: 503 });
+        return Response.json({ transactions: [] });
+      }) as unknown as typeof fetch,
+    );
+    const result = await listener.poll();
+    expect(result.error).toMatch(/503/);
   });
 });

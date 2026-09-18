@@ -100,6 +100,9 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     store,
     config.merchantAddress,
     ROUTE_PATHS.orchestrate,
+    // Outbound too: a downstream that returns no transaction id leaves the request
+    // path nothing to key a receipt on, so the chain is the only source for it.
+    config.payerAddress,
   );
 
   // The facilitator's probe checks CORS headers (PRD §19).

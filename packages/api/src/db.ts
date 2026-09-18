@@ -178,6 +178,22 @@ CREATE TABLE IF NOT EXISTS listener_state (
 );
 `;
 
+/**
+ * Columns added to tables that already existed in a deployed database.
+ *
+ * CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so it silently skips
+ * new columns. That is not a theoretical problem: adding `traces.flow` in Phase 3
+ * left every already-created database without it, and the first real paid call
+ * failed to persist its trace with "table traces has no column named flow" -- after
+ * the payment had already settled.
+ *
+ * Each entry is applied only when the column is absent, so this is idempotent and
+ * safe to run on every open. Any future column belongs here as well as in SCHEMA.
+ */
+const MIGRATIONS: { table: string; column: string; definition: string }[] = [
+  { table: "traces", column: "flow", definition: "TEXT NOT NULL DEFAULT 'inbound'" },
+];
+
 export class Store {
   private readonly db: SqliteDatabase;
 
@@ -187,6 +203,27 @@ export class Store {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Adds any column missing from an older database. Idempotent. */
+  private migrate(): void {
+    for (const m of MIGRATIONS) {
+      const columns = this.db.prepare(`PRAGMA table_info(${m.table})`).all() as Record<
+        string,
+        unknown
+      >[];
+      if (columns.length === 0) continue; // table does not exist yet
+      if (columns.some((c) => String(c["name"]) === m.column)) continue;
+      this.db.exec(`ALTER TABLE ${m.table} ADD COLUMN ${m.column} ${m.definition}`);
+    }
+  }
+
+  /** Column names of a table, for tests and diagnostics. */
+  columnsOf(table: string): string[] {
+    return (this.db.prepare(`PRAGMA table_info(${table})`).all() as Record<string, unknown>[]).map(
+      (c) => String(c["name"]),
+    );
   }
 
   /**
