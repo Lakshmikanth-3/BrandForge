@@ -236,6 +236,13 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
+    // Wait for a write lock instead of failing on it. The API server, the settlement
+    // listener, the prober and the MCP server all open this same file, so BEGIN
+    // IMMEDIATE contends for real. Without a timeout SQLite returns "database is
+    // locked" instantly: a multi-process race test showed one writer in twelve dying
+    // that way, which in production is a budget reservation throwing and taking a
+    // payment attempt down with it rather than refusing it cleanly.
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
     this.migrate();
   }

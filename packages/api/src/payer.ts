@@ -182,11 +182,23 @@ export class DownstreamPayer {
     );
 
     this.hub.begin(id, "budget");
-    const decision = this.guard.reserve({
-      merchant: service.url,
-      route: service.label,
-      amountBase: advertisedAmountBase,
-    });
+    // Belt and braces alongside busy_timeout: if reserving still fails -- a lock held
+    // longer than the timeout, a disk error -- that is a refusal, not a crash. An
+    // exception here would escape pay() and surface to the agent as a broken tool
+    // instead of an honest "could not reserve".
+    let decision;
+    try {
+      decision = this.guard.reserve({
+        merchant: service.url,
+        route: service.label,
+        amountBase: advertisedAmountBase,
+      });
+    } catch (err) {
+      return fail(
+        "budget",
+        `could not reserve spend: ${err instanceof Error ? err.message : "unknown error"}`,
+      );
+    }
     if (!decision.allowed) {
       return fail("budget", `${decision.reason}: ${decision.detail}`);
     }
