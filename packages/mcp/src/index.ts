@@ -109,7 +109,15 @@ for (const service of CURATED) {
       // Fall back to the input example the service publishes, so a tool called
       // with no arguments still sends a body the endpoint will accept.
       const payload = args.payload ?? samplePayloadFor(store, service.url);
-      const outcome = await payer.pay(service, amountBase, payload);
+
+      // Declared alternatives only. Equivalence is a claim that has to be true, so a service
+      // with none simply gets the honest refusal.
+      const alternatives = (service.alternatives ?? []).flatMap((label) => {
+        const alt = CURATED.find((c) => c.label === label);
+        const priceBase = alt ? priceFor(alt) : null;
+        return alt && priceBase !== null ? [{ service: alt, priceBase }] : [];
+      });
+      const outcome = await payer.payWithRouteAround(service, amountBase, payload, alternatives);
 
       if (!outcome.ok) {
         // An honest error, including a refusal by the budget guard.
@@ -140,6 +148,8 @@ for (const service of CURATED) {
                     : null,
                 },
                 latencyMs: outcome.latencyMs,
+                // Tell the agent plainly when a different service answered, and why.
+                routedAround: outcome.substituted ?? null,
               },
               null,
               2,

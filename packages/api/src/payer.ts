@@ -27,6 +27,10 @@ export interface PayOutcome {
   refusedByTrust?: boolean;
   /** Set when the live price diverged from the expected price beyond tolerance. */
   refusedByPriceAnomaly?: boolean;
+  /** The step the call stopped at, when it did not complete. */
+  failedAt?: string;
+  /** Set when a different service answered because the requested one was refused. */
+  substituted?: { from: string; to: string; reason: string };
   status: number | null;
   /** The downstream service's response body, verbatim when it parsed as JSON. */
   result: unknown;
@@ -149,6 +153,7 @@ export class DownstreamPayer {
       this.hub.fail(id, step, detail);
       return {
         ok: false,
+        failedAt: step,
         status: null,
         result: null,
         txId: null,
@@ -169,6 +174,7 @@ export class DownstreamPayer {
       return {
         ok: false,
         refusedByTrust: true,
+        failedAt: "trust",
         status: null,
         result: null,
         txId: null,
@@ -298,6 +304,7 @@ export class DownstreamPayer {
       return {
         ok: false,
         refusedByPriceAnomaly: true,
+        failedAt: "challenge",
         status: 402,
         result: null,
         txId: null,
@@ -445,6 +452,80 @@ export class DownstreamPayer {
       traceId: id,
       error: null,
     };
+  }
+
+  /**
+   * Pays a service, routing around it when it is refused BEFORE any money moves.
+   *
+   * The rule that makes this safe is when it is allowed to act. It substitutes only for a
+   * failure where nothing was paid: a trust refusal, a price anomaly, or a service that could
+   * not even quote a price. It never substitutes after money moved, because paying a second
+   * service for the same request would be a double spend. And it never routes around the
+   * budget guard or the kill switch: those apply to every service, so an alternative would fail
+   * for the same reason, and bypassing a halt is exactly what a halt exists to prevent.
+   *
+   * It also refuses to substitute an unrated or refused service for a refused one. Swapping a
+   * known-bad endpoint for an unknown one is not an improvement anyone asked for, so with no
+   * scored alternative the honest answer is the original refusal, and that refusal is logged.
+   */
+  async payWithRouteAround(
+    primary: CuratedService,
+    primaryPriceBase: number,
+    payload: unknown,
+    alternatives: readonly { service: CuratedService; priceBase: number; payload?: unknown }[],
+  ): Promise<PayOutcome> {
+    const first = await this.pay(primary, primaryPriceBase, payload);
+    if (first.ok || !this.canRouteAround(first)) return first;
+
+    const at = new Date().toISOString();
+    const refusedScore = this.trust.recordFor(primary.url).score;
+    const reason = first.error ?? "refused before payment";
+    const pick = this.trust.alternativeTo(
+      primary.url,
+      alternatives.map((a) => a.service.url),
+    );
+
+    if (!pick) {
+      // The refusal with nowhere to go is the outcome most worth recording.
+      this.store.putSubstitution({
+        at,
+        refusedUrl: primary.url,
+        refusedScore,
+        chosenUrl: null,
+        chosenScore: null,
+        reason: `${reason}; no alternative with a passing record was available`,
+      });
+      return first;
+    }
+
+    const alt = alternatives.find((a) => a.service.url === pick.url)!;
+    this.store.putSubstitution({
+      at,
+      refusedUrl: primary.url,
+      refusedScore,
+      chosenUrl: pick.url,
+      chosenScore: pick.record.score,
+      reason,
+    });
+
+    const outcome = await this.pay(alt.service, alt.priceBase, alt.payload ?? payload);
+    return {
+      ...outcome,
+      substituted: { from: primary.label, to: alt.service.label, reason },
+    };
+  }
+
+  /** True only when no money moved and the cause is specific to this one service. */
+  private canRouteAround(outcome: PayOutcome): boolean {
+    // Money moved: substituting would mean paying twice for one request.
+    if (outcome.txId !== null) return false;
+    return (
+      outcome.refusedByTrust === true ||
+      outcome.refusedByPriceAnomaly === true ||
+      // The service could not quote a price at all: unreachable, or answered something
+      // other than a 402. Budget and kill-switch refusals fail at "budget", not here.
+      outcome.failedAt === "challenge"
+    );
   }
 
   /** Appends one observation for the trust engine. Never throws into a payment. */

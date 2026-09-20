@@ -283,6 +283,17 @@ export interface CuratedService {
   label: string;
   /** What the caller actually gets, for the MCP tool description. */
   summary: string;
+  /**
+   * Labels of services that answer the SAME question, to route to if this one is refused.
+   *
+   * This is a claim about equivalence and it must be true. Substituting one KPI for another
+   * would hand an agent a confident, well-formed, wrong answer, which is worse than the honest
+   * refusal it replaced. So an alternative is declared only where two services really return
+   * the same kind of data, and none of the six curated services currently has one: they are
+   * six different metrics. The mechanism exists and is tested; it stays empty until a genuine
+   * equivalent exists in the catalog.
+   */
+  alternatives?: readonly string[];
 }
 
 export const CURATED: readonly CuratedService[] = [
