@@ -9,7 +9,7 @@
     "apps/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "npm run dev -w @sentry402/api",
@@ -30,7 +30,8 @@
     "settle:inbound": "tsx scripts/settle-inbound.ts",
     "check:endpoint": "tsx scripts/check-endpoint.ts",
     "kill-switch": "tsx scripts/kill-switch.ts",
-    "trust:export": "tsx scripts/export-seed.ts"
+    "trust:export": "tsx scripts/export-seed.ts",
+    "serverless:local": "node scripts/serverless-local.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

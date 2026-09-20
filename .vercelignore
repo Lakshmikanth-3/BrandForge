@@ -1,0 +1,12 @@
+# Never upload local state or secrets. .gitignore already covers most of this, but a
+# deploy from the CLI is exactly where a stray .env would otherwise travel.
+.env
+.env.*
+!.env.example
+data
+.claude
+.git
+node_modules
+**/node_modules
+**/*.tsbuildinfo
+*.sqlite*
