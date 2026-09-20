@@ -79,8 +79,9 @@ flowchart TB
   Browser[Dashboard] -->|polls /api/*| Fn
 ```
 
-The hosted server holds **no private key**. It only sells the two routes and serves the site. Outbound payments
-come from the operator's own machine.
+The hosted server holds one secret, a **TestNet** payer key, because `/v1/orchestrate` pays the downstream service
+after the client pays. It is capped ($0.02 per call, $1.00 per day), limited to curated services, and a call that
+fails costs the client nothing.
 
 ## Structure
 
@@ -121,7 +122,7 @@ Use TestNet only. The site is <https://sentry402-ecru.vercel.app>.
    `npm run kill-switch -- off`.
 8. **Reconcile.** `npm run reconcile`. Expect `clean`.
 9. **Everything at once.** `npm run e2e:testnet -- https://sentry402-ecru.vercel.app`
-   Expect `9/9 passed` and a report in `docs/e2e-testnet-report.md`.
+   Expect `11/11 passed` and a report in `docs/e2e-testnet-report.md`.
 
 ## What is and is not proven
 

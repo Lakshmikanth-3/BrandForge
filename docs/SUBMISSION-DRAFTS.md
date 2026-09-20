@@ -29,7 +29,7 @@ endpoint.
 
 **Evidence (all checkable):** live 402 with the `x402-global-challenge` tag; Bazaar-catalogued routes; Doctor
 reports BAZAAR listed; on-chain receipts reconciled both directions; a public verification panel; an
-end-to-end TestNet script (9/9 steps).
+end-to-end TestNet script (11/11 steps, including a full Orchestrator round trip).
 
 **Honest limits:** runs on TestNet at time of writing; TestNet settlements are our own test traffic, not customer
 volume; the hosted trust record is a snapshot of real observations, refreshed by re-export.

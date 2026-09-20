@@ -135,11 +135,12 @@ Verified live on TestNet at <https://sentry402-ecru.vercel.app>.
 | GoPlausible Doctor | BAZAAR **listed**, HACKATHON **counted** (TestNet) |
 | MCP server, budget guard, kill switch | Done. Kill switch proven halting real spend in the e2e run |
 | Trust engine, price-anomaly refusal | Done, from 55 real observations |
+| Orchestrator round trip (client pays, server pays downstream, result returned) | Done on TestNet, e2e steps 10 and 11 |
 | Route-around | Built and tested. Substitutes only before money moves. No curated service declares an alternative, because none are equivalent |
 | Reconciliation and verification panel | Done. Chain and records agree |
 | Failure injection | Done, reachable over real HTTPS |
 | Dashboard | Done: protocol walkthrough, payer constellation, live flow |
-| End-to-end TestNet script | 9/9 passing, report in `docs/e2e-testnet-report.md` |
+| End-to-end TestNet script | 11/11 passing, report in `docs/e2e-testnet-report.md` |
 
 **Not done, and not claimed:** MainNet cutover (needs real USDC and a MainNet merchant), volume from
 independent third-party payers (the settlements so far are our own test traffic), and the two submissions.
@@ -242,7 +243,7 @@ npm test          # node suites, then the web render suite
 npm run typecheck # packages, scripts and the web app
 ```
 
-**504 tests across 25 files** (503 passing, 1 skipped), plus a live end-to-end script, `npm run e2e:testnet`, that passed 9/9 steps against the deployed TestNet site. Every suite runs on every commit except the ones that
+**504 tests across 25 files** (503 passing, 1 skipped), plus a live end-to-end script, `npm run e2e:testnet`, that passed 11/11 steps against the deployed TestNet site. Every suite runs on every commit except the ones that
 reach the live facilitator and indexer, which are marked below.
 
 | Suite | Covers |
@@ -394,10 +395,25 @@ can do. The design is built around that rather than pretending otherwise.
 | No durable disk | State is rebuilt on every cold start, below |
 | URL unknown until deploy | `PUBLIC_BASE_URL` falls back to Vercel's production-URL variable |
 
-**The hosted server holds no secret key.** It never pays anyone: it sells the paid routes and
-serves the site. Outbound payments come from the MCP server and the prober on the operator's own
-machine, so `PAYER_MNEMONIC` is optional and is not set on Vercel. The four variables that are set
-(`NETWORK`, `FACILITATOR_URL`, `MERCHANT_ADDRESS`, `PAYER_ADDRESS`) are public on-chain values.
+**The hosted server holds one secret: the payer key.** `POST /v1/orchestrate` is an Orchestrator
+route, so after the client pays, the server pays the downstream service from its own wallet. That
+key is set in Vercel as a sensitive variable, is a **TestNet** key holding test USDC only, and is
+never printed, logged or committed. Before any MainNet cutover it must be replaced by a dedicated
+MainNet wallet funded with only what you are willing to lose, because anyone who can obtain paid
+calls can cause that wallet to spend.
+
+What limits the exposure:
+
+- Only curated, allowlisted services can be called. A body naming any other URL gets a 400.
+- Caps are set by environment variable: $0.02 per call, $1.00 per day, $0.10 per merchant per day.
+- The daily cap also counts today's outbound payments **as the chain records them**. The spend log
+  lives in per-instance `/tmp` and resets on a cold start, so without this the cap would restart
+  from zero each time. A test covers it.
+- Any failed, refused or over-cap call answers 4xx or 5xx, and the x402 middleware only settles a
+  client's payment for a response below 400, so a call that did not deliver costs the client nothing.
+
+Known residual: two instances can each reserve against the same daily total in the same instant, so
+the cap can be overshot by roughly the per-call cap times the concurrency. It is a bound, not zero.
 
 ### State on a stateless host
 
@@ -415,7 +431,8 @@ and committed.
 
 **What that means for the hosted trust record, stated plainly:** it is a *snapshot* of real
 observations from real paid calls, refreshed by re-exporting and redeploying. The hosted server has
-no payer key and generates no new observations of its own. The data is real, not a fixture, but it
+no observation pipeline of its own: calls it makes for customers are not fed back into the snapshot
+until it is re-exported. The data is real, not a fixture, but it
 is not live. A test proves a score is identical before and after a round trip through the file, since
 a record that changes on restart is one nobody could trust.
 
