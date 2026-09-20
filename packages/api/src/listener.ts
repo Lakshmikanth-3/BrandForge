@@ -108,23 +108,43 @@ export class SettlementListener {
     });
     if (cursor) params.set("min-round", cursor);
 
-    const url = `${this.net.indexerUrl}/v2/accounts/${address}/transactions?${params.toString()}`;
+    // Follow the indexer's pagination. This used to read only the first page of 100, which
+    // silently truncated the history: fine while there were a few dozen transfers, wrong the
+    // moment there were more, and a real problem on a host with an ephemeral database where
+    // the whole history is re-derived from the chain on every restart. A capped page count
+    // stops a pathological account from looping forever.
+    const MAX_PAGES = 50;
+    const txns: IndexerTxn[] = [];
+    let nextToken: string | undefined;
 
-    let body: { transactions?: IndexerTxn[]; "current-round"?: number };
-    try {
-      const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(15_000) });
-      if (!res.ok) return { scanned: 0, written: 0, latestRound: null, error: `HTTP ${res.status}` };
-      body = (await res.json()) as typeof body;
-    } catch (err) {
-      return {
-        scanned: 0,
-        written: 0,
-        latestRound: null,
-        error: err instanceof Error ? err.message : "indexer unreachable",
-      };
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const pageParams = new URLSearchParams(params);
+      if (nextToken) pageParams.set("next", nextToken);
+      const url = `${this.net.indexerUrl}/v2/accounts/${address}/transactions?${pageParams.toString()}`;
+
+      let body: { transactions?: IndexerTxn[]; "next-token"?: string };
+      try {
+        const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(15_000) });
+        if (!res.ok) {
+          return { scanned: txns.length, written: 0, latestRound: null, error: `HTTP ${res.status}` };
+        }
+        body = (await res.json()) as typeof body;
+      } catch (err) {
+        return {
+          scanned: txns.length,
+          written: 0,
+          latestRound: null,
+          error: err instanceof Error ? err.message : "indexer unreachable",
+        };
+      }
+
+      const batch = body.transactions ?? [];
+      txns.push(...batch);
+      nextToken = body["next-token"];
+      // An empty page or a missing token both mean there is nothing further to read.
+      if (batch.length === 0 || !nextToken) break;
     }
 
-    const txns = body.transactions ?? [];
     let written = 0;
     let maxRound = cursor ? Number(cursor) : 0;
 

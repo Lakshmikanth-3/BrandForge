@@ -628,3 +628,81 @@ describe("money that comes back", () => {
     expect(report.discrepancies[0]!.kind).toBe("amount_mismatch");
   });
 });
+
+describe("listener pagination", () => {
+  // The listener used to read only the first page of 100 transfers, which silently
+  // truncated history. On a host whose database is rebuilt from the chain on every
+  // restart, that is not an edge case: it is the whole recovery path.
+  const pageOf = (start: number, count: number, next?: string) => ({
+    transactions: Array.from({ length: count }, (_, i) => ({
+      id: `TXP${start + i}`,
+      sender: STRANGER,
+      "confirmed-round": 1_000 + start + i,
+      "round-time": 1_789_000_000,
+      "asset-transfer-transaction": {
+        "asset-id": Number(TESTNET.usdcAsaId),
+        amount: 1_000,
+        receiver: MERCHANT,
+      },
+    })),
+    ...(next ? { "next-token": next } : {}),
+  });
+
+  it("follows next-token and records every page", async () => {
+    const store = new Store(":memory:");
+    const seen: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      seen.push(url.searchParams.get("next") ?? "(first)");
+      const next = url.searchParams.get("next");
+      if (!next) return Response.json(pageOf(0, 100, "P2"));
+      if (next === "P2") return Response.json(pageOf(100, 100, "P3"));
+      return Response.json(pageOf(200, 37));
+    }) as unknown as typeof fetch;
+
+    const listener = new SettlementListener(TESTNET, store, MERCHANT, "/v1/orchestrate", null, fetchImpl);
+    const result = await listener.poll();
+
+    expect(seen).toEqual(["(first)", "P2", "P3"]);
+    expect(result.written).toBe(237);
+    expect(store.stats().settleCount).toBe(237);
+  });
+
+  it("stops on an empty page even if a token is still offered", async () => {
+    const store = new Store(":memory:");
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return Response.json(calls === 1 ? pageOf(0, 5, "MORE") : { transactions: [], "next-token": "MORE" });
+    }) as unknown as typeof fetch;
+
+    await new SettlementListener(TESTNET, store, MERCHANT, "/v1/orchestrate", null, fetchImpl).poll();
+    expect(calls).toBe(2);
+    expect(store.stats().settleCount).toBe(5);
+  });
+
+  it("is bounded, so a token that never ends cannot loop forever", async () => {
+    const store = new Store(":memory:");
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return Response.json(pageOf(calls * 10, 3, "FOREVER"));
+    }) as unknown as typeof fetch;
+
+    await new SettlementListener(TESTNET, store, MERCHANT, "/v1/orchestrate", null, fetchImpl).poll();
+    expect(calls).toBeLessThanOrEqual(50);
+  });
+
+  it("reports a failure on a later page instead of pretending it read everything", async () => {
+    const store = new Store(":memory:");
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) return Response.json(pageOf(0, 10, "P2"));
+      return new Response("nope", { status: 503 });
+    }) as unknown as typeof fetch;
+
+    const result = await new SettlementListener(TESTNET, store, MERCHANT, "/v1/orchestrate", null, fetchImpl).poll();
+    expect(result.error).toMatch(/503/);
+  });
+});
