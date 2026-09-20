@@ -22,7 +22,8 @@
  * excluded from any payer claim later.
  *
  * Usage:
- *   npm run settle:inbound                # testnet, refuses on localhost
+ *   npm run settle:inbound                # orchestration route, refuses on localhost
+ *   npm run settle:inbound -- --route trust   # the trust route, catalogued on its own payment
  *   npm run settle:inbound -- --confirm   # required when NETWORK=mainnet
  */
 import algosdk from "algosdk";
@@ -38,7 +39,29 @@ import { accountStatus } from "../packages/api/src/chain.js";
 loadDotenv();
 const config = loadConfig();
 const confirmed = process.argv.includes("--confirm");
-const route = "/v1/orchestrate";
+/**
+ * Each paid route is catalogued by the facilitator on ITS OWN first settled payment, so a
+ * route that has never been paid is not in the Bazaar however many others have. Paying only
+ * the orchestration route left the trust route unlisted.
+ */
+const ROUTES = {
+  orchestrate: { path: "/v1/orchestrate", method: "POST", priceBase: 50_000 },
+  trust: {
+    path: "/v1/trust?url=" + encodeURIComponent("https://api-testnet-production-a3ec.up.railway.app/metric/folks/tvl"),
+    method: "GET",
+    priceBase: 20_000,
+  },
+} as const;
+const routeFlag = process.argv.indexOf("--route");
+const routeName = (routeFlag === -1 ? "orchestrate" : process.argv[routeFlag + 1]) as string;
+if (routeName !== "orchestrate" && routeName !== "trust") {
+  console.error(`
+✗ unknown route "${routeName}". Use: orchestrate | trust
+`);
+  process.exit(1);
+}
+const routeSpec = ROUTES[routeName];
+const route = routeSpec.path;
 const target = `${config.publicBaseUrl}${route}`;
 
 function refuse(message: string): never {
@@ -85,7 +108,7 @@ if (!payerState.usdcOptedIn) {
   refuse(`payer ${config.payerAddress} is not opted into USDC ${config.network.usdcAsaId}.`);
 }
 
-const priceBase = 50_000; // $0.05, the orchestration price
+const priceBase: number = routeSpec.priceBase;
 if ((payerState.usdc ?? 0) * 1e6 < priceBase) {
   refuse(
     `payer holds ${(payerState.usdc ?? 0).toFixed(6)} USDC, needs at least ` +
@@ -119,9 +142,10 @@ const startedAt = Date.now();
 let res: Response;
 try {
   res = await paidFetch(target, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ bootstrap: true }),
+    method: routeSpec.method,
+    ...(routeSpec.method === "POST"
+      ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrap: true }) }
+      : {}),
     signal: AbortSignal.timeout(60_000),
   });
 } catch (err) {

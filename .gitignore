@@ -15,3 +15,5 @@ data/
 
 # TypeScript incremental build state
 *.tsbuildinfo
+
+.vercel
