@@ -35,7 +35,7 @@ export type { SeedFile, ServicesSeedFile, SeedService, RehydrateResult } from ".
 export { ThrottledSync, SYNC_BEFORE_PATHS } from "./sync.js";
 export type { AppOptions } from "./app.js";
 export { Reconciler, receiptsAsCsv } from "./reconcile.js";
-export { Verifier, REPO_URL } from "./verification.js";
+export { Verifier, REPO_URL, bustCache } from "./verification.js";
 export type { VerificationReport, VerificationRow, CheckStatus } from "./verification.js";
 export type { ReconcileReport, Discrepancy } from "./reconcile.js";
 export { PRICES, ROUTE_PATHS } from "./x402.js";

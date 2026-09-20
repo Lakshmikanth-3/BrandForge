@@ -78,12 +78,31 @@ async function getJson<T>(
   }
 }
 
+/**
+ * Defeats the facilitator's edge cache on the discovery endpoints.
+ *
+ * They are served with `Cache-Control: public, max-age=30, s-maxage=86400`, so a shared cache
+ * such as Cloudflare's can hold a response for up to a DAY, keyed by the full URL and per
+ * region. That bit for real: the dashboard loaded once before the first settlement, the
+ * US-region server that renders the proof panel fetched the catalog and the edge cached
+ * "nothing listed", and every later fetch from that region returned the stale copy while a
+ * machine in another region saw the truth. The panel showed RED for facts that were true, on
+ * the one screen whose whole job is to be believed.
+ *
+ * A unique query parameter makes each read a distinct cache key, so it reaches the origin.
+ * Our own report cache already limits this to one read per minute per instance.
+ */
+export function bustCache(url: string, now: number = Date.now()): string {
+  return `${url}${url.includes("?") ? "&" : "?"}_=${now}`;
+}
+
 export class Verifier {
   private readonly cache = new TtlCache<VerificationReport>(60_000);
 
   constructor(
     private readonly config: AppConfig,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async report(): Promise<VerificationReport> {
@@ -98,11 +117,11 @@ export class Verifier {
         this.fetchImpl,
       ),
       getJson<{ items?: MerchantRecord[] }>(
-        `${this.config.facilitatorUrl}/discovery/merchants?limit=200`,
+        bustCache(`${this.config.facilitatorUrl}/discovery/merchants?limit=200`, this.now()),
         this.fetchImpl,
       ),
       getJson<{ items?: BazaarItem[] }>(
-        `${this.config.facilitatorUrl}/discovery/resources?limit=5000`,
+        bustCache(`${this.config.facilitatorUrl}/discovery/resources?limit=5000`, this.now()),
         this.fetchImpl,
       ),
       this.probeOwnEndpoint(),

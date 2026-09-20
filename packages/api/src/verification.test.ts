@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig, CHALLENGE_TAG, MAINNET, TESTNET } from "@sentry402/shared";
-import { Verifier } from "./verification.js";
+import { Verifier, bustCache } from "./verification.js";
 
 const MERCHANT = "ZMFK2OI7ZBD2U27ISERZC4S6LKM6WMFJPZQ4MYNJDZ2VNBNMBA67RA22AA";
 
@@ -243,5 +243,55 @@ describe("caching", () => {
     const afterFirst = calls;
     await verifier.report();
     expect(calls).toBe(afterFirst);
+  });
+});
+
+describe("the facilitator's edge cache", () => {
+  // The discovery endpoints are served with s-maxage=86400, so a shared cache can hold a
+  // response for up to a day, keyed by URL and per region. The proof panel was showing RED for
+  // true facts because the server that renders it was served a copy cached BEFORE the first
+  // settlement. Each discovery read must therefore be a distinct cache key.
+  it("adds a unique query parameter to every discovery read", async () => {
+    const seen: string[] = [];
+    const recording = (async (input: string | URL | Request) => {
+      seen.push(String(input));
+      return world({})(input);
+    }) as unknown as typeof fetch;
+
+    await new Verifier(configFor(), recording, () => 1_700_000_000_000).report();
+
+    const discovery = seen.filter((u) => u.includes("/discovery/"));
+    expect(discovery.length).toBe(2);
+    for (const url of discovery) expect(url).toMatch(/[?&]_=1700000000000$/);
+  });
+
+  it("uses a different key on a later read, so a stale copy cannot be reused", async () => {
+    const urls: string[][] = [[], []];
+    let batch = 0;
+    const recording = (async (input: string | URL | Request) => {
+      if (String(input).includes("/discovery/")) urls[batch]!.push(String(input));
+      return world({})(input);
+    }) as unknown as typeof fetch;
+
+    let t = 1_000;
+    const first = new Verifier(configFor(), recording, () => t);
+    await first.report();
+    batch = 1;
+    t = 2_000;
+    await new Verifier(configFor(), recording, () => t).report();
+
+    expect(urls[0]).not.toEqual(urls[1]);
+    expect(urls[0]!.every((u) => u.endsWith("_=1000"))).toBe(true);
+    expect(urls[1]!.every((u) => u.endsWith("_=2000"))).toBe(true);
+  });
+
+  it("keeps the existing query parameters and appends with an ampersand", () => {
+    expect(bustCache("https://f.test/discovery/x?limit=200", 5)).toBe(
+      "https://f.test/discovery/x?limit=200&_=5",
+    );
+  });
+
+  it("starts a query string when there is none", () => {
+    expect(bustCache("https://f.test/discovery/x", 5)).toBe("https://f.test/discovery/x?_=5");
   });
 });

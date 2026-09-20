@@ -403,7 +403,9 @@ export class CatalogIngester {
   async ingest(limit = 5_000): Promise<IngestResult> {
     let items: unknown[];
     try {
-      const res = await fetch(`${this.facilitatorUrl}/discovery/resources?limit=${limit}`, {
+      // Cache-busted for the same reason as the proof panel: the facilitator's edge may hold
+      // this response for up to a day, and a stale catalog means stale prices.
+      const res = await fetch(`${this.facilitatorUrl}/discovery/resources?limit=${limit}&_=${Date.now()}`, {
         signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) {
