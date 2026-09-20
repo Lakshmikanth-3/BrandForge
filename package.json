@@ -30,6 +30,7 @@
     "settle:inbound": "tsx scripts/settle-inbound.ts",
     "check:endpoint": "tsx scripts/check-endpoint.ts",
     "kill-switch": "tsx scripts/kill-switch.ts",
+    "e2e:testnet": "tsx scripts/e2e-testnet.ts",
     "trust:export": "tsx scripts/export-seed.ts",
     "serverless:local": "node scripts/serverless-local.mjs"
   },
