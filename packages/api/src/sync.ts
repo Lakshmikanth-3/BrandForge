@@ -72,4 +72,6 @@ export class ThrottledSync {
 }
 
 /** Endpoints whose answer depends on receipts, and which therefore sync first. */
-export const SYNC_BEFORE_PATHS = /^\/api\/(stats|receipts|receipts\.csv|reconcile)$/;
+// The orchestrate route is here because it spends: the daily cap reads today's outbound payments
+// from the chain-derived receipts, so they must be fresh before the guard decides.
+export const SYNC_BEFORE_PATHS = /^\/(api\/(stats|receipts|receipts\.csv|reconcile)|v1\/orchestrate)$/;

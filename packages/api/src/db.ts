@@ -738,7 +738,22 @@ export class Store {
         ? this.db.prepare(sql).get(day, merchant)
         : this.db.prepare(sql).get(day)
     ) as Record<string, unknown>;
-    return Number(row["total"] ?? 0);
+    const logged = Number(row["total"] ?? 0);
+    if (merchant) return logged;
+
+    // The daily total also counts today's outbound payments as the CHAIN records them. On a
+    // host that loses its disk on every cold start the spend log begins empty, which would reset
+    // the daily cap to zero each time. Receipts are rebuilt from the indexer, so taking the
+    // larger of the two keeps the cap honest across restarts without double counting a payment
+    // that appears in both. (The per-merchant cap stays log-only: a chain receipt names an
+    // address, not the service URL the log keys on.)
+    const onChain = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(amount_base),0) AS total FROM receipts
+          WHERE direction = 'out' AND substr(settled_at, 1, 10) = ?`,
+      )
+      .get(day) as Record<string, unknown>;
+    return Math.max(logged, Number(onChain["total"] ?? 0));
   }
 
   /**

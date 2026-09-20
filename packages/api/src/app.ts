@@ -11,7 +11,8 @@ import { SettlementListener } from "./listener.js";
 import { SYNC_BEFORE_PATHS, ThrottledSync } from "./sync.js";
 import { CatalogIngester } from "./catalog.js";
 import { metadataRoutes } from "./metadata.js";
-import { BudgetGuard } from "./budget.js";
+import { BudgetGuard, DEFAULT_LIMITS, type BudgetLimits } from "./budget.js";
+import { orchestrateHandler } from "./orchestrate.js";
 import { DownstreamPayer } from "./payer.js";
 import { TrustEngine } from "./trust.js";
 import { INJECT_PREFIX, mountInjectRoutes } from "./inject.js";
@@ -104,6 +105,23 @@ export interface AppOptions {
   serverless?: boolean;
 }
 
+/**
+ * Optional tighter caps for a host that holds a wallet. Each is in USDC base units, and an unset
+ * or invalid value falls back to the default, so a typo can only ever leave the defaults in
+ * place and never silently remove a cap.
+ */
+function limitsFromEnv(env: NodeJS.ProcessEnv = process.env): BudgetLimits {
+  const pick = (name: string, fallback: number): number => {
+    const n = Number(env[name]);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+  };
+  return {
+    perCallBase: pick("BUDGET_PER_CALL_BASE", DEFAULT_LIMITS.perCallBase),
+    perDayBase: pick("BUDGET_PER_DAY_BASE", DEFAULT_LIMITS.perDayBase),
+    perMerchantPerDayBase: pick("BUDGET_PER_MERCHANT_BASE", DEFAULT_LIMITS.perMerchantPerDayBase),
+  };
+}
+
 export function createApp(
   config: AppConfig,
   storePath?: string,
@@ -136,7 +154,7 @@ export function createApp(
   app.get("/livez", (c) => c.json({ alive: true, buildSha: config.buildSha }));
 
   const ingester = new CatalogIngester(config.network, store, config.facilitatorUrl);
-  const guard = new BudgetGuard(store);
+  const guard = new BudgetGuard(store, limitsFromEnv());
   const trust = new TrustEngine(store);
 
   // A bad payer key must not take the whole API down: /healthz still needs to be
@@ -204,15 +222,7 @@ export function createApp(
 
   // Phase 1 payload is a stub. Phase 3 replaces this body with the bridged call;
   // the payment path above does not change.
-  app.post(ROUTE_PATHS.orchestrate, (c) =>
-    c.json({
-      phase: 1,
-      note: "Payment path live. Downstream routing lands in Phase 3.",
-      network: config.network.name,
-      settledTo: config.merchantAddress,
-      at: new Date().toISOString(),
-    }),
-  );
+  app.post(ROUTE_PATHS.orchestrate, orchestrateHandler({ config, store, payer, trust }));
 
   return { app, store, hub, listener, ingester, guard, trust, payer };
 }

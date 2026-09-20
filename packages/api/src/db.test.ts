@@ -349,3 +349,34 @@ describe("substitutions", () => {
     expect(row.refusedScore).toBe(0.1);
   });
 });
+
+describe("the daily cap survives a host that loses its disk", () => {
+  it("counts today's outbound chain receipts even with an empty spend log", () => {
+    const store = new Store(":memory:");
+    const day = "2026-09-20";
+    store.putReceipt({
+      txId: "TXOUT", direction: "out", route: "/x", payer: "P", payee: "S", amountBase: 300_000,
+      amountUsdc: 0.3, assetId: "1", network: "testnet", confirmedRound: 1,
+      settledAt: `${day}T10:00:00.000Z`, traceId: null, latencyMs: null, explorerUrl: "",
+    } as never);
+    // A fresh spend log, as after a cold start, must not read as "nothing spent today".
+    expect(store.committedToday(day)).toBe(300_000);
+    expect(store.committedToday("2026-09-21")).toBe(0);
+  });
+
+  it("does not double count a payment present in both the log and the chain", () => {
+    const store = new Store(":memory:");
+    const day = "2026-09-20";
+    store.putReceipt({
+      txId: "TX2", direction: "out", route: "/x", payer: "P", payee: "S", amountBase: 100_000,
+      amountUsdc: 0.1, assetId: "1", network: "testnet", confirmedRound: 1,
+      settledAt: `${day}T10:00:00.000Z`, traceId: null, latencyMs: null, explorerUrl: "",
+    } as never);
+    const r = store.tryReserveSpend({
+      id: "r1", day, merchant: "S", route: "/x", amountBase: 100_000,
+      perDayBase: 2_000_000, perMerchantPerDayBase: 500_000,
+    } as never);
+    expect(r.ok).toBe(true);
+    expect(store.committedToday(day)).toBe(100_000);
+  });
+});
