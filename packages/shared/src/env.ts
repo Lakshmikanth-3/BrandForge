@@ -71,11 +71,15 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
   // Falling back to it removes a chicken-and-egg step: the domain does not have to be
   // guessed and pasted in before the service exists. An explicit PUBLIC_BASE_URL wins,
   // which is what a custom domain at cutover will use.
+  // Vercel injects VERCEL_PROJECT_PRODUCTION_URL as a bare host with no scheme, and it is
+  // the PRODUCTION alias even inside a preview deployment. That is exactly what we want:
+  // a preview URL must never be the one the facilitator catalogs.
+  const vercelHost = raw["VERCEL_PROJECT_PRODUCTION_URL"];
+  const hostUrl =
+    raw["RENDER_EXTERNAL_URL"] ?? (vercelHost ? `https://${vercelHost}` : undefined);
   const withHostUrl: NodeJS.ProcessEnv = {
     ...raw,
-    ...(raw["PUBLIC_BASE_URL"] ? {} : raw["RENDER_EXTERNAL_URL"]
-      ? { PUBLIC_BASE_URL: raw["RENDER_EXTERNAL_URL"] }
-      : {}),
+    ...(raw["PUBLIC_BASE_URL"] || !hostUrl ? {} : { PUBLIC_BASE_URL: hostUrl }),
   };
   const parsed = schema.safeParse(withHostUrl);
   if (!parsed.success) {

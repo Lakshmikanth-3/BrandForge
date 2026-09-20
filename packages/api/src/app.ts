@@ -8,6 +8,7 @@ import { traceMiddleware } from "./tracing.js";
 import { apiRoutes } from "./api.js";
 import { ROUTE_PATHS, publicUrlMiddleware, x402Middleware } from "./x402.js";
 import { SettlementListener } from "./listener.js";
+import { SYNC_BEFORE_PATHS, ThrottledSync } from "./sync.js";
 import { CatalogIngester } from "./catalog.js";
 import { metadataRoutes } from "./metadata.js";
 import { BudgetGuard } from "./budget.js";
@@ -90,7 +91,25 @@ export interface AppParts {
 const ORCHESTRATE_PRICE_BASE = 50_000; // $0.05
 const TRUST_PRICE_BASE = 20_000; // $0.02
 
-export function createApp(config: AppConfig, storePath?: string): AppParts {
+export interface AppOptions {
+  /**
+   * Run without a long-lived process.
+   *
+   * A serverless function starts for a request and may be discarded when it responds, so it
+   * has no background timer and cannot hold a live event stream open. In this mode the read
+   * endpoints that depend on receipts sync from the chain on demand (throttled), and the
+   * live stream is reported as unavailable so the dashboard polls instead of showing a
+   * connection that can never establish as though it had failed.
+   */
+  serverless?: boolean;
+}
+
+export function createApp(
+  config: AppConfig,
+  storePath?: string,
+  options: AppOptions = {},
+): AppParts {
+  const serverless = options.serverless === true;
   const app = new Hono();
   const store = new Store(storePath ?? "data/sentry402.sqlite");
   const hub = new TraceHub(store, config.network.name);
@@ -132,7 +151,16 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     );
   }
 
-  app.route("/api", apiRoutes(config, store, hub, guard, trust, payer));
+  if (serverless) {
+    // Bring receipts up to date from the chain before any endpoint that reads them.
+    const sync = new ThrottledSync(() => listener.poll());
+    app.use("/api/*", async (c, next) => {
+      if (SYNC_BEFORE_PATHS.test(c.req.path)) await sync.ensureFresh();
+      await next();
+    });
+  }
+
+  app.route("/api", apiRoutes(config, store, hub, guard, trust, payer, { live: !serverless }));
 
   // Deliberately broken endpoints for failure injection. Null on mainnet, where
   // routes that exist to misbehave have no business on the probed domain.

@@ -23,7 +23,10 @@ export function apiRoutes(
   guard: BudgetGuard,
   trust: TrustEngine,
   payer: DownstreamPayer | null,
+  options: { live?: boolean } = {},
 ): Hono {
+  /** False on a serverless host, which cannot hold an event stream open. */
+  const live = options.live !== false;
   const api = new Hono();
 
   // The free lookup is what the UI and a curious judge use. Payment limits the paid
@@ -40,6 +43,9 @@ export function apiRoutes(
       prices: PRICES,
       network: config.network.name,
       explorerTxBase: config.network.explorerTxBase,
+      // Tells the dashboard whether the live stream exists, so it can poll instead of
+      // reconnecting forever to something that will never answer.
+      stream: live,
     }),
   );
 
@@ -197,6 +203,18 @@ export function apiRoutes(
    * state change on one real request. If the stream drops, the UI says so
    * rather than continuing to animate.
    */
+  api.get("/stream", (c, next) => {
+    if (!live) {
+      // Say so plainly. An event stream needs a process that outlives the request, and a
+      // serverless function does not have one; the dashboard polls /api/traces instead.
+      return c.json(
+        { live: false, reason: "serverless host: no long-lived process to hold a stream" },
+        501,
+      );
+    }
+    return next();
+  });
+
   api.get("/stream", (c) =>
     streamSSE(c, async (stream) => {
       let open = true;

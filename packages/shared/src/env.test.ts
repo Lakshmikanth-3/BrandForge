@@ -131,3 +131,40 @@ describe("running on a host that injects its own URL, without a payer key", () =
     expect(() => loadConfig({ ...rest })).toThrow(EnvError);
   });
 });
+
+describe("on Vercel", () => {
+  const { PUBLIC_BASE_URL: _drop, ...noUrl } = base;
+
+  it("takes the public url from VERCEL_PROJECT_PRODUCTION_URL, adding the scheme", () => {
+    // Vercel injects a bare host with no scheme.
+    const c = loadConfig({ ...noUrl, VERCEL_PROJECT_PRODUCTION_URL: "sentry402.vercel.app" });
+    expect(c.publicBaseUrl).toBe("https://sentry402.vercel.app");
+  });
+
+  it("lets an explicit PUBLIC_BASE_URL win, which a custom domain will use", () => {
+    const c = loadConfig({
+      ...base,
+      PUBLIC_BASE_URL: "https://sentry402.example",
+      VERCEL_PROJECT_PRODUCTION_URL: "sentry402.vercel.app",
+    });
+    expect(c.publicBaseUrl).toBe("https://sentry402.example");
+  });
+
+  it("uses the PRODUCTION alias, not the per-deployment URL", () => {
+    // VERCEL_URL names the specific deployment, and a preview URL must never be the one the
+    // facilitator catalogs.
+    const c = loadConfig({
+      ...noUrl,
+      VERCEL_URL: "sentry402-abc123-someone.vercel.app",
+      VERCEL_PROJECT_PRODUCTION_URL: "sentry402.vercel.app",
+    });
+    expect(c.publicBaseUrl).toBe("https://sentry402.vercel.app");
+    expect(c.publicBaseUrl).not.toContain("abc123");
+  });
+
+  it("does not invent a url from VERCEL_URL alone", () => {
+    expect(() => loadConfig({ ...noUrl, VERCEL_URL: "sentry402-abc123.vercel.app" })).toThrow(
+      EnvError,
+    );
+  });
+});
