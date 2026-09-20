@@ -1,5 +1,8 @@
-node_modules
+# .dockerignore patterns are anchored at the context root, unlike .gitignore, so a bare
+# "*.tsbuildinfo" or "dist" only matches at the top level. Nested packages need "**/".
 **/node_modules
+**/dist
+**/*.tsbuildinfo
 .git
 .env
 .env.*
@@ -10,6 +13,3 @@ data
 *.sqlite-wal
 *.sqlite-shm
 .claude
-apps/web/dist
-packages/*/dist
-*.tsbuildinfo
