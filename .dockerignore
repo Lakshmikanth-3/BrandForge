@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+.git
+.env
+.env.*
+!.env.example
+data
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.claude
+apps/web/dist
+packages/*/dist
+*.tsbuildinfo
