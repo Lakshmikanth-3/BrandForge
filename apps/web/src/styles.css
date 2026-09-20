@@ -797,3 +797,14 @@ footer {
   overflow: auto;
   font-size: 11px;
 }
+
+/* -- crash fallback -- */
+.crash {
+  padding: 18px;
+  border-color: var(--bad);
+  margin-top: 28px;
+}
+.crash h3 {
+  color: var(--bad);
+  margin-bottom: 8px;
+}

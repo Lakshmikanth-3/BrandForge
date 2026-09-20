@@ -77,16 +77,10 @@ export default function App() {
           </span>
         </div>
         <div className="counters">
-          <Counter label="settles" value={stats ? String(stats.settleCount) : "—"} />
-          <Counter
-            label="usdc in"
-            value={stats ? stats.totalUsdc.toFixed(6) : "—"}
-          />
-          <Counter
-            label="distinct payers"
-            value={stats ? String(stats.distinctPayers) : "—"}
-            emphasis
-          />
+          <Counter label="settles" value={count(stats?.settleCount)} />
+          <Counter label="usdc in" value={usdc(stats?.totalUsdc)} />
+          <Counter label="distinct payers" value={count(stats?.distinctPayers)} emphasis />
+          <Counter label="net spent" value={usdc(stats?.netOutboundUsdc)} />
         </div>
       </header>
 
@@ -703,6 +697,17 @@ function BudgetPanel({ budget }: { budget: Budget | null }) {
       )}
     </div>
   );
+}
+
+/**
+ * Formatters that treat a missing number as missing. A value that is undefined is not zero,
+ * and formatting it must not throw: one exception during render unmounts the whole page.
+ */
+function usdc(n: number | null | undefined, digits = 6): string {
+  return typeof n === "number" && Number.isFinite(n) ? n.toFixed(digits) : "\u2014";
+}
+function count(n: number | null | undefined): string {
+  return typeof n === "number" && Number.isFinite(n) ? String(n) : "\u2014";
 }
 
 function Counter({

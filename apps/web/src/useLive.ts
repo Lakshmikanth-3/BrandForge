@@ -107,10 +107,14 @@ export function useLive() {
       es.addEventListener("snapshot", (e) => {
         const payload = JSON.parse((e as MessageEvent<string>).data) as {
           traces: Trace[];
-          stats: Stats;
         };
         setTraces(payload.traces.slice(0, 25));
-        setStats((prev) => ({ ...(prev ?? ({} as Stats)), ...payload.stats }));
+        // Deliberately NOT merging payload.stats into state. The stream carries the raw
+        // store figures in base units, with no totalUsdc, while the display reads the
+        // derived /api/stats shape. Merging them made the header call totalUsdc.toFixed on
+        // undefined whenever the stream's first message beat the stats request, React had no
+        // error boundary, and the whole page rendered blank. Always fetch the derived shape.
+        void refreshSideData();
         setStreamState("live");
       });
 
