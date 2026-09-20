@@ -73,7 +73,9 @@ Real settled payments, not fixtures. Reproduce with `npm run reconcile`.
 | USDC sent downstream | 0.440000 |
 | USDC refunded by services | 0.275000 |
 | **Net cost of 36 paid calls** | **0.165000** |
-| Reconciliation | 42 on-chain transfers, 42 records, 42 matched, clean |
+| Inbound settlements into the merchant | 2 (0.07 USDC): one per paid route |
+| Routes catalogued by the facilitator | 2, each on its own first settled payment |
+| Reconciliation | 43 on-chain transfers, 43 records, 43 matched, clean |
 | Services with a real trust score | 5 of 6 |
 
 ```
@@ -218,7 +220,7 @@ npm test          # node suites, then the web render suite
 npm run typecheck # packages, scripts and the web app
 ```
 
-**433 tests across 19 files.** Every suite runs on every commit except the ones that
+**496 tests across 23 files.** Every suite runs on every commit except the ones that
 reach the live facilitator and indexer, which are marked below.
 
 | Suite | Covers |
@@ -354,63 +356,76 @@ them, where we are the paying client and genuinely observe both.
 
 ## Deploy
 
-The public server runs on **Render's free tier** from `render.yaml` and the `Dockerfile`.
-One service owns the whole root domain: the Foundation requires one root domain per `payTo`
-address, so the API and the site must not be split, and routes differentiate by **path**,
-never subdomain.
+The public server runs on **Vercel's free Hobby plan**: <https://sentry402-ecru.vercel.app>.
+One project owns the whole root domain. The Foundation requires one root domain per `payTo`
+address, so the API and the site must not be split, and routes differentiate by **path**, never
+subdomain. Static assets are served by Vercel; everything else falls through to one serverless
+function (`api/index.js`).
 
-Free hosting has three constraints, and the design is built around each rather than
-pretending they are not there.
+A serverless function has no process that outlives the request, which changes what the server
+can do. The design is built around that rather than pretending otherwise.
 
-| Constraint | Consequence | What was done |
-| --- | --- | --- |
-| Spins down after 15 minutes without traffic | The facilitator's probe could hit a cold service | An external pinger requests `/livez` every 5 minutes |
-| The filesystem is ephemeral | The SQLite file is lost on every restart and redeploy | State is rebuilt on boot, below |
-| 750 free hours per workspace per month | A second free service can exhaust the budget and suspend this one | Run only this one free service in the workspace |
+| Constraint | What was done |
+| --- | --- |
+| No background timer | Receipts sync from the chain **on demand**, throttled and coalesced, before the endpoints that read them |
+| No live event stream | `/api/flow` reports `stream: false` and the dashboard **polls**, shown as `STREAM POLLING`, a healthy state and not a failure |
+| No durable disk | State is rebuilt on every cold start, below |
+| URL unknown until deploy | `PUBLIC_BASE_URL` falls back to Vercel's production-URL variable |
 
-**The hosted server holds no secret key.** It never pays anyone: it sells the paid routes
-and serves the site. Outbound payments come from the MCP server and the prober running on the
-operator's own machine, so `PAYER_MNEMONIC` is optional and is absent from `render.yaml`. The
-addresses in that file are public on-chain. `PUBLIC_BASE_URL` is taken from the
-`RENDER_EXTERNAL_URL` the host injects, so the domain does not have to be guessed before the
-service exists.
+**The hosted server holds no secret key.** It never pays anyone: it sells the paid routes and
+serves the site. Outbound payments come from the MCP server and the prober on the operator's own
+machine, so `PAYER_MNEMONIC` is optional and is not set on Vercel. The four variables that are set
+(`NETWORK`, `FACILITATOR_URL`, `MERCHANT_ADDRESS`, `PAYER_ADDRESS`) are public on-chain values.
 
-### State on an ephemeral disk
+### State on a stateless host
 
 Each kind of state is restored from the place that still has it.
 
 | State | Restored from |
 | --- | --- |
-| Receipts, inbound and outbound | The chain. The settlement listener re-derives every transfer from the indexer, following its pagination |
-| Service registry | The Bazaar catalog, by re-running the ingest and the probes |
+| Receipts, inbound and outbound, and refunds | The chain, re-derived from the indexer following its pagination |
+| Service registry and probe results | `seed/services.json`, keeping each probe's **original** timestamp |
 | Trust outcomes | `seed/outcomes.json`, imported only when the table is empty |
 
-Trust outcomes are the one thing that cannot be re-derived: they are observations of what a
-service returned when we paid it, and no chain records that. So they are exported from the
-operator's payer (`npm run trust:export`) and committed.
+Trust outcomes cannot be re-derived: they are observations of what a service returned when we paid
+it, and no chain records that. They are exported from the operator's payer (`npm run trust:export`)
+and committed.
 
 **What that means for the hosted trust record, stated plainly:** it is a *snapshot* of real
-observations from real paid calls, refreshed by re-exporting and redeploying. The hosted
-server has no payer key and generates no new observations of its own. The data is real, not a
-fixture, but it is not live. A test proves a score is identical before and after a round trip
-through the file, since a record that changes on restart is one nobody could trust.
+observations from real paid calls, refreshed by re-exporting and redeploying. The hosted server has
+no payer key and generates no new observations of its own. The data is real, not a fixture, but it
+is not live. A test proves a score is identical before and after a round trip through the file, since
+a record that changes on restart is one nobody could trust.
 
-### The advertised URL
+Measured against an empty database, the first `/api/stats` rebuilt all 36 outbound payments and the
+refunds from the chain in about three seconds, a second call inside the throttle window took 70ms, and
+reconciliation matched 42 of 42.
 
-The 402 challenge embeds the resource URL and the facilitator catalogs it permanently. Behind
-a hosting proxy the request URL says `http://` even when every caller used `https://`, so the
-advertised URL is pinned to `PUBLIC_BASE_URL` rather than derived from the request. It ignores
-`Host` and `X-Forwarded-*`, so a spoofed header cannot change what gets listed.
+### Two things that only showed up on a real deploy
+
+**The advertised URL is pinned.** The 402 challenge embeds the resource URL and the facilitator catalogs
+it permanently. Behind a hosting proxy the request URL says `http://` even when every caller used
+`https://`, so the advertised URL is derived from `PUBLIC_BASE_URL` and ignores `Host` and
+`X-Forwarded-*`. A spoofed header cannot change what gets listed.
+
+**The facilitator's discovery endpoints are edge-cached for up to a day.** They are served with
+`Cache-Control: public, max-age=30, s-maxage=86400`, keyed by URL and per region. The proof panel was
+showing red for true facts because the server that renders it had been served a copy cached before the
+first settlement, while a machine in another region saw the truth. Every discovery read now carries a
+unique query parameter so it reaches the origin.
+
+Vercel's Hobby plan is for non-commercial use, which fits a hackathon entry. A Render blueprint
+(`render.yaml`) is kept as an alternative host.
 
 ## Links
 
 | | |
 | --- | --- |
 | Repository | <https://github.com/Lakshmikanth-3/Sentry402> |
-| Live site | _pending deploy_ |
-| Paid orchestration route | _pending deploy_ — `POST /v1/orchestrate` |
-| Paid trust route | _pending deploy_ — `GET /v1/trust?url=` |
-| Bazaar listing | _pending first settlement_ |
+| Live site | <https://sentry402-ecru.vercel.app> |
+| Paid orchestration route | <https://sentry402-ecru.vercel.app/v1/orchestrate> — `POST`, $0.05 |
+| Paid trust route | <https://sentry402-ecru.vercel.app/v1/trust?url=> — `GET`, $0.02 |
+| Bazaar listing | both routes listed on TestNet; MainNet _pending cutover_ |
 | Merchant record | <https://facilitator.goplausible.xyz/discovery/merchants> |
 | Bazaar catalog | <https://facilitator.goplausible.xyz/discovery/resources> |
 | Facilitator guide and Doctor | <https://facilitator.goplausible.xyz/guide> |
