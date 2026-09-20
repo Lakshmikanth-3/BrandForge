@@ -234,8 +234,11 @@ export class Store {
   constructor(path = "data/sentry402.sqlite") {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
+    // FIRST, before anything else touches the file. journal_mode = WAL takes a lock of
+    // its own, so a timeout set after it protects nothing on the one statement most
+    // likely to collide: twelve processes opening one database at once made it fail with
+    // "database is locked" about one run in four, even after busy_timeout was added,
+    // because busy_timeout was being set after the pragma that needed it.
     // Wait for a write lock instead of failing on it. The API server, the settlement
     // listener, the prober and the MCP server all open this same file, so BEGIN
     // IMMEDIATE contends for real. Without a timeout SQLite returns "database is
@@ -243,6 +246,9 @@ export class Store {
     // that way, which in production is a budget reservation throwing and taking a
     // payment attempt down with it rather than refusing it cleanly.
     this.db.exec("PRAGMA busy_timeout = 5000");
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
+
     this.db.exec(SCHEMA);
     this.migrate();
   }
