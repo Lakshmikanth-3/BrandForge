@@ -46,8 +46,41 @@ export const ROUTE_PATHS = {
   trust: "/v1/trust",
 } as const;
 
+/**
+ * Retries a facilitator call that failed at the socket, before any HTTP response existed.
+ *
+ * On a serverless host the first request after a cold start opens a fresh TLS connection to
+ * the facilitator, and that connection is sometimes closed from the far side ("other side
+ * closed"). The x402 middleware then answers that request with a 500, which is exactly what
+ * the GoPlausible Doctor reported. Nothing was wrong with the route; one handshake was. A
+ * response with a status is never retried: only a network-level failure is.
+ */
+export function retryTransient<T extends object>(
+  target: T,
+  method: keyof T & string,
+  attempts = 3,
+  delayMs = 300,
+): void {
+  const original = (target[method] as unknown as (...a: unknown[]) => Promise<unknown>).bind(target);
+  (target as Record<string, unknown>)[method] = async (...args: unknown[]) => {
+    let last: unknown;
+    for (let i = 0; i < attempts; i += 1) {
+      try {
+        return await original(...args);
+      } catch (err) {
+        last = err;
+        const transient = err instanceof TypeError || /fetch failed|socket|ECONN|ETIMEDOUT/i.test(String(err));
+        if (!transient || i === attempts - 1) break;
+        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+      }
+    }
+    throw last;
+  };
+}
+
 export function buildResourceServer(config: AppConfig) {
   const facilitatorClient = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
+  retryTransient(facilitatorClient, "getSupported");
 
   // Registered against the "algorand:*" glob rather than one exact chain id.
   // @x402/avm changed its CAIP-2 constants to the 32-char reference form in
