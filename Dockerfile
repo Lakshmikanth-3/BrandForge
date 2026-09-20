@@ -30,6 +30,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+# Real trust observations, imported on boot when the database is empty (ephemeral hosts).
+COPY --from=build /app/seed ./seed
 
 # Fly injects PORT; the app's env schema defaults to 4021 if unset
 EXPOSE 4021

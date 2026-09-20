@@ -22,6 +22,8 @@ export {
 } from "./catalog.js";
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";
+export { rehydrate, importSeedOutcomes, isSeedFile, SEED_PATH } from "./rehydrate.js";
+export type { SeedFile, RehydrateResult } from "./rehydrate.js";
 export { Reconciler, receiptsAsCsv } from "./reconcile.js";
 export { Verifier, REPO_URL } from "./verification.js";
 export type { VerificationReport, VerificationRow, CheckStatus } from "./verification.js";

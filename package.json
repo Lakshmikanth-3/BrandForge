@@ -29,7 +29,8 @@
     "receipts:sync": "tsx scripts/sync-receipts.ts",
     "settle:inbound": "tsx scripts/settle-inbound.ts",
     "check:endpoint": "tsx scripts/check-endpoint.ts",
-    "kill-switch": "tsx scripts/kill-switch.ts"
+    "kill-switch": "tsx scripts/kill-switch.ts",
+    "trust:export": "tsx scripts/export-seed.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -5,6 +5,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { EnvError, loadConfig } from "@sentry402/shared";
 import { createApp } from "./app.js";
+import { rehydrate } from "./rehydrate.js";
 
 /**
  * Anchor every path to the repo root, not to cwd. `npm run -w` sets cwd to the
@@ -31,9 +32,9 @@ try {
   throw err;
 }
 
-const { app, listener } = createApp(config);
+const { app, listener, store, ingester } = createApp(config);
 
-// One Railway service owns the whole root domain: API paths plus the static site.
+// One service owns the whole root domain: API paths plus the static site.
 // The Foundation's one-root-domain-per-payTo rule means these must not be split.
 // Built Vite output. `npm run build` produces it; a missing dist just means the
 // API serves 404 for the page, not that the API is down.
@@ -47,4 +48,18 @@ serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`  payer    ${config.payerAddress}`);
   console.log(`  health   ${config.publicBaseUrl}/healthz`);
   console.log(`  paid     POST ${config.publicBaseUrl}/v1/orchestrate  ($0.05 USDC)`);
+
+  // Restore state AFTER listening, never before. A free host's health check and the
+  // facilitator's probe both need an answer within seconds of a cold start, and the
+  // catalog probes can take a minute when a curated service is itself waking up. The
+  // server is useful the moment it is listening; the registry fills in behind it.
+  void rehydrate(store, ingester, config.network.name, {
+    log: (line) => console.log(`  ${line}`),
+  })
+    .then((result) => {
+      for (const error of result.errors) console.error(`  rehydrate: ${error}`);
+    })
+    .catch((err: unknown) => {
+      console.error("  rehydrate failed:", err instanceof Error ? err.message : err);
+    });
 });

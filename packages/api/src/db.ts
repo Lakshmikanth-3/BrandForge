@@ -589,6 +589,25 @@ export class Store {
     }));
   }
 
+  /** Every outcome, oldest first. For the snapshot export, not for scoring. */
+  allOutcomes() {
+    const rows = this.db
+      .prepare(`SELECT * FROM outcomes ORDER BY at ASC, id ASC`)
+      .all() as Record<string, unknown>[];
+    return rows.map((r) => ({
+      resourceUrl: String(r["resource_url"]),
+      at: String(r["at"]),
+      ok: Number(r["ok"]) === 1,
+      httpStatus: r["http_status"] === null ? null : Number(r["http_status"]),
+      latencyMs: r["latency_ms"] === null ? null : Number(r["latency_ms"]),
+      settled: Number(r["settled"]) === 1,
+      schemaOk: r["schema_ok"] === null ? null : Number(r["schema_ok"]) === 1,
+      coldStart: Number(r["cold_start"]) === 1,
+      clientError: Number(r["client_error"] ?? 0) === 1,
+      failureReason: r["failure_reason"] === null ? null : String(r["failure_reason"]),
+    }));
+  }
+
   outcomeCount(resourceUrl?: string): number {
     const row = (
       resourceUrl
