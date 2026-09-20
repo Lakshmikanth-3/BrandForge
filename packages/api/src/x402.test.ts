@@ -364,3 +364,46 @@ describe("the discovery declaration is valid per the CURRENT spec", () => {
     expect(get.extensions.bazaar.info.input.body).toBeUndefined();
   });
 });
+
+describe("the advertised resource URL is the public one, whatever the proxy says", () => {
+  // Behind a hosting proxy the container sees plain http on an internal host, so a URL
+  // built from the request is wrong -- and the facilitator catalogs whatever is advertised,
+  // permanently, against a payTo we cannot rotate. Found by simulating the proxy headers:
+  // even with X-Forwarded-Proto: https the advertised URL said http://.
+  const resourceUrlOf = (res: Response) =>
+    (challengeOf(res) as unknown as { resource: { url: string } }).resource.url;
+
+  it("advertises https and the configured origin for the orchestration route", async () => {
+    const res = await app().app.request("/v1/orchestrate", { method: "POST" });
+    expect(resourceUrlOf(res)).toBe("https://example.test/v1/orchestrate");
+  });
+
+  it("ignores an http request URL and a spoofed forwarded host", async () => {
+    const res = await app().app.request("http://internal.container:4021/v1/orchestrate", {
+      method: "POST",
+      headers: { Host: "evil.example", "X-Forwarded-Host": "evil.example", "X-Forwarded-Proto": "http" },
+    });
+    expect(resourceUrlOf(res)).toBe("https://example.test/v1/orchestrate");
+  });
+
+  it("keeps the query string on the paid trust route", async () => {
+    // The endpoint being looked up rides in the query, so dropping it would catalog a
+    // different resource than the one that was requested.
+    const res = await app().app.request("/v1/trust?url=https%3A%2F%2Fa.test%2Fx");
+    expect(resourceUrlOf(res)).toBe("https://example.test/v1/trust?url=https%3A%2F%2Fa.test%2Fx");
+  });
+
+  it("never advertises localhost or a non-https scheme when a public url is configured", async () => {
+    for (const [path, method] of [["/v1/orchestrate", "POST"], ["/v1/trust", "GET"]] as const) {
+      const url = resourceUrlOf(await app().app.request(path, { method }));
+      expect(url).toMatch(/^https:\/\//);
+      expect(url).not.toMatch(/localhost|127\.0\.0\.1|internal/);
+    }
+  });
+
+  it("does not disturb the payment challenge itself", async () => {
+    const challenge = challengeOf(await app().app.request("/v1/orchestrate", { method: "POST" }));
+    expect(challenge.accepts[0]!.amount).toBe("50000");
+    expect(challenge.accepts[0]!.payTo).toBe(env.MERCHANT_ADDRESS);
+  });
+});

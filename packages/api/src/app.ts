@@ -6,7 +6,7 @@ import { Store } from "./db.js";
 import { TraceHub } from "./trace.js";
 import { traceMiddleware } from "./tracing.js";
 import { apiRoutes } from "./api.js";
-import { ROUTE_PATHS, x402Middleware } from "./x402.js";
+import { ROUTE_PATHS, publicUrlMiddleware, x402Middleware } from "./x402.js";
 import { SettlementListener } from "./listener.js";
 import { CatalogIngester } from "./catalog.js";
 import { metadataRoutes } from "./metadata.js";
@@ -144,6 +144,7 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
   // Order matters: the tracer wraps the payment middleware so it observes both
   // the 402 it issues and the settlement it completes.
   app.use(`${ROUTE_PATHS.orchestrate}`, traceMiddleware(hub, store, config, ORCHESTRATE_PRICE_BASE));
+  app.use(`${ROUTE_PATHS.orchestrate}`, publicUrlMiddleware(config));
   app.use(`${ROUTE_PATHS.orchestrate}`, x402Middleware(config));
 
   // Paid trust lookup. Cached, because a score recomputed from unchanged outcomes
@@ -154,6 +155,7 @@ export function createApp(config: AppConfig, storePath?: string): AppParts {
     ROUTE_PATHS.trust,
     traceMiddleware(hub, store, config, TRUST_PRICE_BASE),
   );
+  app.use(ROUTE_PATHS.trust, publicUrlMiddleware(config));
   app.use(ROUTE_PATHS.trust, x402Middleware(config));
 
   app.get(ROUTE_PATHS.trust, (c) => {

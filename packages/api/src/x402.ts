@@ -216,6 +216,35 @@ const paywall = createPaywall()
   })
   .build();
 
+/**
+ * Pins the URL the payment middleware advertises to PUBLIC_BASE_URL.
+ *
+ * The 402 challenge embeds resource.url, the facilitator catalogs that URL, and it is
+ * bound to a payTo we may never rotate -- so it has to be exactly right. The middleware
+ * builds it from the incoming request, which behind a hosting proxy is wrong in a way
+ * that only shows up after deploy: the proxy terminates HTTPS and forwards plain HTTP to
+ * the container, so the request URL says http:// even though every real caller used
+ * https://. Sending X-Forwarded-Proto did not help; the middleware reads the request URL
+ * directly. Left alone, a settled payment would have catalogued an http:// listing
+ * permanently.
+ *
+ * Only the origin is replaced. Path and query are kept, because the paid trust route puts
+ * the endpoint being looked up in the query string.
+ */
+export function publicUrlMiddleware(config: AppConfig): MiddlewareHandler {
+  const origin = new URL(config.publicBaseUrl).origin;
+  return async (c, next) => {
+    const incoming = new URL(c.req.url);
+    // HonoRequest exposes url as a prototype getter over the raw request, so an own
+    // property on this instance shadows it for everything that reads c.req.url.
+    Object.defineProperty(c.req, "url", {
+      value: `${origin}${incoming.pathname}${incoming.search}`,
+      configurable: true,
+    });
+    await next();
+  };
+}
+
 export function x402Middleware(config: AppConfig): MiddlewareHandler {
   const server = buildResourceServer(config);
   return paymentMiddleware(
