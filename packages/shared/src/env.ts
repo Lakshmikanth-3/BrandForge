@@ -24,11 +24,23 @@ const schema = z.object({
     .string()
     .regex(ALGORAND_ADDRESS, "PAYER_ADDRESS must be a 58-char Algorand address"),
 
-  /** 25-word mnemonic. Secret: never logged, never serialised, never returned. */
+  /**
+   * 25-word mnemonic. Secret: never logged, never serialised, never returned.
+   *
+   * OPTIONAL, because the public server never pays anyone: it sells the paid routes and
+   * serves the site, and every outbound payment comes from the MCP server or the prober
+   * running on the operator's own machine. Requiring the key here meant the deployed
+   * server had to hold a funded wallet's secret on a free third-party host for no reason
+   * at all. Without it the payer is simply disabled, which /api/budget reports honestly.
+   */
   PAYER_MNEMONIC: z
     .string()
     .trim()
-    .refine((s) => s.split(/\s+/).length === 25, "PAYER_MNEMONIC must be 25 words"),
+    .refine(
+      (s) => s === "" || s.split(/\s+/).length === 25,
+      "PAYER_MNEMONIC must be 25 words when set",
+    )
+    .optional(),
 
   ALGOD_URL: z.string().url().optional().or(z.literal("")),
   INDEXER_URL: z.string().url().optional().or(z.literal("")),
@@ -44,7 +56,7 @@ export interface AppConfig {
   readonly payerAddress: string;
   readonly buildSha: string;
   /** Kept out of the public config object on purpose — see `secrets`. */
-  readonly secrets: { readonly payerMnemonic: string };
+  readonly secrets: { readonly payerMnemonic: string | null };
 }
 
 export class EnvError extends Error {
@@ -55,7 +67,17 @@ export class EnvError extends Error {
 }
 
 export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = schema.safeParse(raw);
+  // Render injects RENDER_EXTERNAL_URL, which is only knowable AFTER the first deploy.
+  // Falling back to it removes a chicken-and-egg step: the domain does not have to be
+  // guessed and pasted in before the service exists. An explicit PUBLIC_BASE_URL wins,
+  // which is what a custom domain at cutover will use.
+  const withHostUrl: NodeJS.ProcessEnv = {
+    ...raw,
+    ...(raw["PUBLIC_BASE_URL"] ? {} : raw["RENDER_EXTERNAL_URL"]
+      ? { PUBLIC_BASE_URL: raw["RENDER_EXTERNAL_URL"] }
+      : {}),
+  };
+  const parsed = schema.safeParse(withHostUrl);
   if (!parsed.success) {
     throw new EnvError(
       parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
@@ -76,7 +98,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
     merchantAddress: e.MERCHANT_ADDRESS,
     payerAddress: e.PAYER_ADDRESS,
     buildSha: raw["RAILWAY_GIT_COMMIT_SHA"] ?? e.BUILD_SHA,
-    secrets: { payerMnemonic: e.PAYER_MNEMONIC },
+    secrets: { payerMnemonic: e.PAYER_MNEMONIC ? e.PAYER_MNEMONIC : null },
   };
 }
 

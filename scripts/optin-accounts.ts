@@ -58,6 +58,11 @@ interface Target {
   account: algosdk.Account;
 }
 
+if (config.secrets.payerMnemonic === null) {
+  console.error("\n\u2717 PAYER_MNEMONIC is not set, so the payer cannot sign its opt-in.\n");
+  process.exit(1);
+}
+
 const targets: Target[] = [
   { label: "merchant", account: algosdk.mnemonicToSecretKey(merchantMnemonic.trim()) },
   { label: "payer", account: algosdk.mnemonicToSecretKey(config.secrets.payerMnemonic) },

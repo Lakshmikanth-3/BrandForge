@@ -108,6 +108,10 @@ export class DownstreamPayer {
     this.network = config.network;
     // mnemonicToSecretKey gives the 64-byte seed||pubkey form the signer wants.
     // algosdk is already a dependency, so this avoids a second key-handling path.
+    if (config.secrets.payerMnemonic === null) {
+      // Not an error to log loudly: the public server is meant to run without a key.
+      throw new Error("no PAYER_MNEMONIC configured -- this instance cannot pay");
+    }
     const account = algosdk.mnemonicToSecretKey(config.secrets.payerMnemonic);
     this.address = account.addr.toString();
 

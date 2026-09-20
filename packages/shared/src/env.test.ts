@@ -80,3 +80,54 @@ describe("publicConfig — secret containment", () => {
     expect(Object.keys(publicConfig(c))).not.toContain("secrets");
   });
 });
+
+describe("running on a host that injects its own URL, without a payer key", () => {
+  // The public server never pays anyone: it sells the paid routes and serves the site.
+  // Requiring the payer's mnemonic meant a deployed server had to hold a funded wallet's
+  // secret on a free third-party host for no reason.
+  const withoutMnemonic = (() => {
+    const { PAYER_MNEMONIC: _drop, ...rest } = base;
+    return rest;
+  })();
+
+  it("boots without a PAYER_MNEMONIC", () => {
+    const c = loadConfig({ ...withoutMnemonic });
+    expect(c.secrets.payerMnemonic).toBeNull();
+  });
+
+  it("treats an empty PAYER_MNEMONIC as absent rather than as a bad key", () => {
+    expect(loadConfig({ ...base, PAYER_MNEMONIC: "" }).secrets.payerMnemonic).toBeNull();
+  });
+
+  it("still rejects a mnemonic that is set but the wrong length", () => {
+    expect(() => loadConfig({ ...base, PAYER_MNEMONIC: "only three words" })).toThrow(
+      /25 words when set/,
+    );
+  });
+
+  it("still never serialises a mnemonic that IS set", () => {
+    const c = loadConfig({ ...base });
+    expect(JSON.stringify(publicConfig(c))).not.toContain("word0");
+  });
+
+  it("takes PUBLIC_BASE_URL from RENDER_EXTERNAL_URL when it is not set", () => {
+    // The domain only exists after the first deploy, so it cannot be pasted in first.
+    const { PUBLIC_BASE_URL: _drop, ...rest } = base;
+    const c = loadConfig({ ...rest, RENDER_EXTERNAL_URL: "https://sentry402.onrender.com" });
+    expect(c.publicBaseUrl).toBe("https://sentry402.onrender.com");
+  });
+
+  it("lets an explicit PUBLIC_BASE_URL win, which is what a custom domain uses", () => {
+    const c = loadConfig({
+      ...base,
+      PUBLIC_BASE_URL: "https://sentry402.example",
+      RENDER_EXTERNAL_URL: "https://sentry402.onrender.com",
+    });
+    expect(c.publicBaseUrl).toBe("https://sentry402.example");
+  });
+
+  it("still requires SOME public url", () => {
+    const { PUBLIC_BASE_URL: _drop, ...rest } = base;
+    expect(() => loadConfig({ ...rest })).toThrow(EnvError);
+  });
+});

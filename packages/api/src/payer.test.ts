@@ -62,8 +62,16 @@ describe("DownstreamPayer construction", () => {
 
   it("never exposes the mnemonic on the instance", () => {
     const payer = build();
-    expect(JSON.stringify(payer)).not.toContain(MNEMONIC.split(" ")[0]!);
+    const serialised = JSON.stringify(payer);
+    // Assert on the whole phrase and on a run of words, not on a single word. An earlier
+    // version checked the first word, which with a random mnemonic is sometimes "act" --
+    // a substring of "transaction" in the explorer URL -- so it failed one run in a few
+    // dozen for reasons unrelated to any leak.
+    const words = MNEMONIC.split(" ");
+    expect(serialised).not.toContain(MNEMONIC);
+    expect(serialised).not.toContain(words.slice(0, 4).join(" "));
     expect(Object.keys(payer)).not.toContain("mnemonic");
+    expect(Object.keys(payer)).not.toContain("secrets");
   });
 });
 
@@ -463,4 +471,37 @@ describe("trust gate enforcement at the payment layer", () => {
     const blocked = await payer.pay(service, 5_000, null);
     expect(blocked.refusedByTrust).toBe(true);
   });
+});
+
+describe("a server with no payer key", () => {
+  it("refuses to construct a payer rather than pretending it can pay", () => {
+    const store = new Store(":memory:");
+    const config = configFor({ PAYER_MNEMONIC: "" });
+    expect(config.secrets.payerMnemonic).toBeNull();
+    expect(
+      () =>
+        new DownstreamPayer(
+          config,
+          store,
+          new BudgetGuard(store),
+          new TraceHub(store, "testnet"),
+          new TrustEngine(store),
+        ),
+    ).toThrow(/no PAYER_MNEMONIC/);
+  });
+
+  it("still serves the API, reporting the payer as not ready", async () => {
+    const { createApp } = await import("./app.js");
+    const { app, payer } = createApp(configFor({ PAYER_MNEMONIC: "" }), ":memory:");
+    expect(payer).toBeNull();
+
+    const budget = (await (await app.request("/api/budget")).json()) as {
+      payerReady: boolean;
+      payerAddress: string | null;
+    };
+    expect(budget.payerReady).toBe(false);
+    expect(budget.payerAddress).toBeNull();
+    // The paid routes do not depend on it.
+    expect((await app.request("/v1/orchestrate", { method: "POST" })).status).toBe(402);
+  }, 30_000);
 });

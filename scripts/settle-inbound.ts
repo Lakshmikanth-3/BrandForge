@@ -103,6 +103,9 @@ bootstrap settlement
 `);
 
 // ── Pay ───────────────────────────────────────────────────────────────────────
+if (config.secrets.payerMnemonic === null) {
+  refuse("PAYER_MNEMONIC is not set. This script pays from the payer, so it needs the key.");
+}
 const account = algosdk.mnemonicToSecretKey(config.secrets.payerMnemonic);
 if (account.addr.toString() !== config.payerAddress) {
   refuse("PAYER_MNEMONIC does not derive PAYER_ADDRESS.");
