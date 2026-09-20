@@ -155,7 +155,9 @@ describe("ThrottledSync", () => {
 });
 
 describe("SYNC_BEFORE_PATHS", () => {
-  it.each(["/api/stats", "/api/receipts", "/api/receipts.csv", "/api/reconcile"])(
+  // /v1/orchestrate is included because it SPENDS: the daily cap reads today's outbound payments
+  // from chain-derived receipts, so they must be fresh before the guard decides.
+  it.each(["/api/stats", "/api/receipts", "/api/receipts.csv", "/api/reconcile", "/v1/orchestrate"])(
     "syncs before %s, which reads receipts",
     (path) => expect(SYNC_BEFORE_PATHS.test(path)).toBe(true),
   );
@@ -167,7 +169,7 @@ describe("SYNC_BEFORE_PATHS", () => {
     "/api/traces",
     "/api/verification",
     "/api/trust",
-    "/v1/orchestrate",
+    "/v1/trust",
     "/livez",
     "/api/statsx",
   ])("does not sync before %s", (path) => expect(SYNC_BEFORE_PATHS.test(path)).toBe(false));
