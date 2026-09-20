@@ -505,3 +505,25 @@ describe("a server with no payer key", () => {
     expect((await app.request("/v1/orchestrate", { method: "POST" })).status).toBe(402);
   }, 30_000);
 });
+
+describe("settlement header naming", () => {
+  it("reads the tx id from the v2 PAYMENT-RESPONSE header", async () => {
+    const store = new Store(":memory:");
+    const payer = new DownstreamPayer(
+      configFor(), store, new BudgetGuard(store), new TraceHub(store, "testnet"), new TrustEngine(store),
+    );
+    Reflect.set(payer, "plainFetch", async () =>
+      new Response(null, {
+        status: 402,
+        headers: { "payment-required": Buffer.from(JSON.stringify({ accepts: [{ network: TESTNET.caip2, amount: "5000" }] })).toString("base64") },
+      }));
+    Reflect.set(payer, "paidFetch", async () =>
+      new Response("{}", {
+        status: 200,
+        headers: { "payment-response": Buffer.from(JSON.stringify({ success: true, transaction: "TXV2" })).toString("base64") },
+      }));
+    const out = await payer.pay(service, 5_000, null);
+    expect(out.txId).toBe("TXV2");
+    expect(store.receipts({ direction: "out" })[0]?.txId).toBe("TXV2");
+  });
+});

@@ -348,7 +348,11 @@ export class DownstreamPayer {
 
     this.hub.end(id, "request", "ok", `HTTP ${res.status}`);
 
-    const settlement = decodeSettlement(res.headers.get("x-payment-response"));
+    const settlement = decodeSettlement(
+      // x402 v2 names it PAYMENT-RESPONSE; v1 used X-PAYMENT-RESPONSE. Reading only the old one
+      // silently dropped the tx id from every v2 downstream, which then looked unsettled.
+      res.headers.get("payment-response") ?? res.headers.get("x-payment-response"),
+    );
     const txId = settlement?.transaction ?? settlement?.txId ?? settlement?.txid ?? null;
 
     // A 402 still standing means the wrapper could not satisfy the challenge.

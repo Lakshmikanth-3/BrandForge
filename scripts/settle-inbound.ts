@@ -162,7 +162,7 @@ if (res.status !== 200) {
 }
 
 /** The facilitator's settlement receipt, base64 in a response header. */
-const settlementHeader = res.headers.get("x-payment-response");
+const settlementHeader = res.headers.get("payment-response") ?? res.headers.get("x-payment-response");
 let txId: string | null = null;
 if (settlementHeader) {
   try {

@@ -85,7 +85,7 @@ export function traceMiddleware(
     await next();
     const settleMs = Date.now() - startedAt;
 
-    const settlement = decodePaymentResponse(c.res.headers.get("X-PAYMENT-RESPONSE") ?? undefined);
+    const settlement = decodePaymentResponse(c.res.headers.get("PAYMENT-RESPONSE") ?? c.res.headers.get("X-PAYMENT-RESPONSE") ?? undefined);
     const txId = txIdOf(settlement);
     const paid = c.res.status < 400;
 
