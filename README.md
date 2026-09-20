@@ -218,7 +218,7 @@ npm test          # node suites, then the web render suite
 npm run typecheck # packages, scripts and the web app
 ```
 
-**338 tests across 16 files.** Every suite runs on every commit except the ones that
+**433 tests across 19 files.** Every suite runs on every commit except the ones that
 reach the live facilitator and indexer, which are marked below.
 
 | Suite | Covers |
@@ -263,6 +263,9 @@ npm run prober -- --calls 30 --interval 25   # paced real calls, builds trust hi
 npm run receipts:sync                # pull receipts from chain for both addresses
 npm run reconcile                    # receipts against the chain; non-zero on any gap
 npm run settle:inbound               # bootstrap settlement (refuses on localhost)
+npm run trust:export                 # snapshot trust observations into seed/outcomes.json
+npm run kill-switch -- on|off|status # halt or resume outbound payments (CLI, not an endpoint)
+npm run check:endpoint -- <url>      # 12 checks on a live 402, before spending the bootstrap payment
 ```
 
 `settle:inbound` refuses to run unless `PUBLIC_BASE_URL` is a public HTTPS domain. The
@@ -351,13 +354,53 @@ them, where we are the paying client and genuinely observe both.
 
 ## Deploy
 
-Railway, single service, `railway.json` committed. One service owns the whole root
-domain — the Foundation requires one root domain per `payTo` address, so the API and
-the site must not be split, and routes differentiate by **path**, never subdomain.
+The public server runs on **Render's free tier** from `render.yaml` and the `Dockerfile`.
+One service owns the whole root domain: the Foundation requires one root domain per `payTo`
+address, so the API and the site must not be split, and routes differentiate by **path**,
+never subdomain.
 
-Required Railway variables: `NETWORK`, `PUBLIC_BASE_URL`, `FACILITATOR_URL`,
-`MERCHANT_ADDRESS`, `PAYER_ADDRESS`, `PAYER_MNEMONIC`. `BUILD_SHA` is taken from
-`RAILWAY_GIT_COMMIT_SHA` automatically.
+Free hosting has three constraints, and the design is built around each rather than
+pretending they are not there.
+
+| Constraint | Consequence | What was done |
+| --- | --- | --- |
+| Spins down after 15 minutes without traffic | The facilitator's probe could hit a cold service | An external pinger requests `/livez` every 5 minutes |
+| The filesystem is ephemeral | The SQLite file is lost on every restart and redeploy | State is rebuilt on boot, below |
+| 750 free hours per workspace per month | A second free service can exhaust the budget and suspend this one | Run only this one free service in the workspace |
+
+**The hosted server holds no secret key.** It never pays anyone: it sells the paid routes
+and serves the site. Outbound payments come from the MCP server and the prober running on the
+operator's own machine, so `PAYER_MNEMONIC` is optional and is absent from `render.yaml`. The
+addresses in that file are public on-chain. `PUBLIC_BASE_URL` is taken from the
+`RENDER_EXTERNAL_URL` the host injects, so the domain does not have to be guessed before the
+service exists.
+
+### State on an ephemeral disk
+
+Each kind of state is restored from the place that still has it.
+
+| State | Restored from |
+| --- | --- |
+| Receipts, inbound and outbound | The chain. The settlement listener re-derives every transfer from the indexer, following its pagination |
+| Service registry | The Bazaar catalog, by re-running the ingest and the probes |
+| Trust outcomes | `seed/outcomes.json`, imported only when the table is empty |
+
+Trust outcomes are the one thing that cannot be re-derived: they are observations of what a
+service returned when we paid it, and no chain records that. So they are exported from the
+operator's payer (`npm run trust:export`) and committed.
+
+**What that means for the hosted trust record, stated plainly:** it is a *snapshot* of real
+observations from real paid calls, refreshed by re-exporting and redeploying. The hosted
+server has no payer key and generates no new observations of its own. The data is real, not a
+fixture, but it is not live. A test proves a score is identical before and after a round trip
+through the file, since a record that changes on restart is one nobody could trust.
+
+### The advertised URL
+
+The 402 challenge embeds the resource URL and the facilitator catalogs it permanently. Behind
+a hosting proxy the request URL says `http://` even when every caller used `https://`, so the
+advertised URL is pinned to `PUBLIC_BASE_URL` rather than derived from the request. It ignores
+`Host` and `X-Forwarded-*`, so a spoofed header cannot change what gets listed.
 
 ## Links
 
