@@ -125,7 +125,7 @@ export function createApp(
   );
 
   // The facilitator's probe checks CORS headers (PRD §19).
-  app.use("*", cors({ origin: "*", allowHeaders: ["*"], exposeHeaders: ["*"] }));
+  app.use("*", cors({ origin: "*", allowHeaders: ["*"], exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"] }));
 
   app.get("/healthz", async (c) => {
     const report = await healthReport(config);
