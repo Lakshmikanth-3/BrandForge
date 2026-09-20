@@ -1,0 +1,31 @@
+# Render blueprint: a free, no-card deploy of the public Sentry402 server.
+#
+# Everything below is public information. The merchant and payer ADDRESSES are on-chain
+# and visible to anyone; there is deliberately NO PAYER_MNEMONIC here. The hosted server
+# never pays anyone, so it must not hold a funded wallet's key on a free third-party host.
+# Outbound payments come from the MCP server and the prober on the operator's own machine.
+#
+# PUBLIC_BASE_URL is not set either: Render injects RENDER_EXTERNAL_URL and the server
+# falls back to it, so the domain does not have to be guessed before the service exists.
+#
+# Free-tier constraints this is built around (https://render.com/docs/free):
+#   - spins down after 15 minutes without inbound traffic  -> keep it warm with a pinger
+#   - 750 free instance hours per workspace per month      -> run only ONE free service
+#   - the filesystem is ephemeral                          -> state is rebuilt on boot
+services:
+  - type: web
+    name: sentry402
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /livez
+    autoDeploy: true
+    envVars:
+      - key: NETWORK
+        value: testnet
+      - key: FACILITATOR_URL
+        value: https://facilitator.goplausible.xyz
+      - key: MERCHANT_ADDRESS
+        value: 7CIF7QT56P2S2XBG65INSFOYYK6DJHQ4LUPVJXVZB2VR4SSGO423AZTROA
+      - key: PAYER_ADDRESS
+        value: OTVJB2ZSQW4CJTQDU6UMRFWRW2D4GIKRQPBUARS5AXW4KVRRWYZYCTGXYA
