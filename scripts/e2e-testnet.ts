@@ -218,6 +218,52 @@ await guarded("9. GoPlausible Doctor: BAZAAR and HACKATHON badges", async () => 
   return `BAZAAR ${j.badges.bazaar.present}, HACKATHON ${j.badges.hackathon.present} (${j.remaining} checks left today)`;
 });
 
+// ───────────── 10. the Orchestrator round trip ─────────────
+const customerClient = () => {
+  const signer = toClientAvmSigner(Buffer.from(customer.sk).toString("base64"));
+  return wrapFetchWithPayment(fetch, new x402Client().register("algorand:*", new ExactAvmScheme(signer)));
+};
+
+await guarded("10. client pays $0.05, our backend pays downstream, synthesized result returned", async () => {
+  const addr = customer.addr.toString();
+  const before = await usdcOf(addr);
+  const res = await customerClient()(`${BASE}/v1/orchestrate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target: "folks_tvl" }),
+  });
+  if (res.status !== 200) throw new Error(`expected 200, got ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const body = (await res.json()) as {
+    ok?: boolean; result?: unknown; receipt?: { txId?: string; amountUsdc?: number }; trust?: { verdict?: string };
+  };
+  if (!body.ok || !body.result) throw new Error(`no result: ${JSON.stringify(body).slice(0, 200)}`);
+  const tx = body.receipt?.txId;
+  if (!tx) throw new Error("no downstream transaction id in the receipt");
+
+  const charged = before - (await usdcOf(addr));
+  if (charged !== 50_000) throw new Error(`customer was charged ${charged}, expected 50000`);
+
+  // The downstream payment must exist on chain, paid by OUR wallet, not just claimed in JSON.
+  const info = await algod.pendingTransactionInformation(tx).do().catch(() => null);
+  const sender = info?.txn?.txn?.sender?.toString?.();
+  if (sender && sender !== payer.addr.toString()) throw new Error(`downstream tx sent by ${sender}, not our payer`);
+  return `customer -0.05, downstream tx ${tx} (${body.receipt?.amountUsdc} USDC), trust ${body.trust?.verdict}, on-chain sender ${sender ? "verified" : "not in recent window"}`;
+});
+
+await guarded("11. a refused target does not charge the client", async () => {
+  const addr = customer.addr.toString();
+  const before = await usdcOf(addr);
+  const res = await customerClient()(`${BASE}/v1/orchestrate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target: "https://evil.example/drain" }),
+  });
+  if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`);
+  const charged = before - (await usdcOf(addr));
+  if (charged !== 0) throw new Error(`client was charged ${charged} for a refused request`);
+  return "HTTP 400, customer balance unchanged";
+});
+
 // ───────────── report ─────────────
 const passed = results.filter((r) => r.pass).length;
 const report = [

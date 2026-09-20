@@ -23,10 +23,10 @@
  * signature of a cold-start fault. A log line per boot phase, and handlers that turn a crash
  * into a log line, are what make that diagnosable instead of a guess.
  */
-import { handle } from "@hono/node-server/vercel";
 import { loadConfig } from "../packages/shared/dist/index.js";
 import { createApp } from "../packages/api/dist/app.js";
 import { rehydrate } from "../packages/api/dist/rehydrate.js";
+import { vercelHandler } from "../packages/api/dist/vercel.js";
 
 const bootStartedAt = Date.now();
 console.log(`[boot] modules loaded, process uptime ${Math.round(process.uptime() * 1000)}ms`);
@@ -52,7 +52,9 @@ console.log(
   `[boot] rehydrate ${Date.now() - rehydrateStartedAt}ms, total boot ${Date.now() - bootStartedAt}ms`,
 );
 
-const inner = handle(app);
+// Our own adapter, not @hono/node-server/vercel: Vercel pre-parses the body, which leaves the
+// stock adapter waiting forever on a stream that is already drained (see packages/api/src/vercel.ts).
+const inner = vercelHandler(app.fetch);
 
 /** Logs any request that is slow or that throws, with its path, so a 500 has a cause. */
 export default async function handler(req, res) {
