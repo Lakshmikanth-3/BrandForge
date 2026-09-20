@@ -125,6 +125,28 @@ panel. Rows with no machine-readable source report `manual` rather than claiming
 pass, and failing rows are shown failing — a panel that can show red is the only
 reason to believe the green.
 
+## Status
+
+Verified live on TestNet at <https://sentry402-ecru.vercel.app>.
+
+| Area | State |
+| --- | --- |
+| Paid routes (`/v1/orchestrate` $0.05, `/v1/trust` $0.02) | Done. 12/12 endpoint checks |
+| GoPlausible Doctor | BAZAAR **listed**, HACKATHON **counted** (TestNet) |
+| MCP server, budget guard, kill switch | Done. Kill switch proven halting real spend in the e2e run |
+| Trust engine, price-anomaly refusal | Done, from 55 real observations |
+| Route-around | Built and tested. Substitutes only before money moves. No curated service declares an alternative, because none are equivalent |
+| Reconciliation and verification panel | Done. Chain and records agree |
+| Failure injection | Done, reachable over real HTTPS |
+| Dashboard | Done: protocol walkthrough, payer constellation, live flow |
+| End-to-end TestNet script | 9/9 passing, report in `docs/e2e-testnet-report.md` |
+
+**Not done, and not claimed:** MainNet cutover (needs real USDC and a MainNet merchant), volume from
+independent third-party payers (the settlements so far are our own test traffic), and the two submissions.
+The Doctor itself notes that TestNet does not count toward the Challenge.
+
+See `docs/PROJECT.md` for the architecture, diagrams and a manual test, and `docs/SUBMISSION-DRAFTS.md`.
+
 ## Stack
 
 
@@ -220,7 +242,7 @@ npm test          # node suites, then the web render suite
 npm run typecheck # packages, scripts and the web app
 ```
 
-**496 tests across 23 files.** Every suite runs on every commit except the ones that
+**504 tests across 25 files** (503 passing, 1 skipped), plus a live end-to-end script, `npm run e2e:testnet`, that passed 9/9 steps against the deployed TestNet site. Every suite runs on every commit except the ones that
 reach the live facilitator and indexer, which are marked below.
 
 | Suite | Covers |
