@@ -186,6 +186,7 @@ describe("rehydrate", () => {
     const store = new Store(":memory:");
     const result = await rehydrate(store, ingesterWith(store, "ok"), "testnet", {
       seedPath: path,
+      servicesSeedPath: join(dir(), "absent-services.json"),
     });
 
     expect(result.seedImported).toBe(8);
@@ -205,6 +206,7 @@ describe("rehydrate", () => {
     const store = new Store(":memory:");
     const result = await rehydrate(store, ingesterWith(store, "catalog-down"), "testnet", {
       seedPath: path,
+      servicesSeedPath: join(dir(), "absent-services.json"),
     });
 
     expect(result.seedImported).toBe(8);
@@ -215,6 +217,7 @@ describe("rehydrate", () => {
     const store = new Store(":memory:");
     const result = await rehydrate(store, ingesterWith(store, "throws"), "testnet", {
       seedPath: join(dir(), "absent.json"),
+      servicesSeedPath: join(dir(), "absent-services.json"),
     });
     expect(result.errors.join(" ")).toMatch(/boom/);
   });
@@ -223,6 +226,7 @@ describe("rehydrate", () => {
     const store = new Store(":memory:");
     const result = await rehydrate(store, ingesterWith(store, "ok"), "testnet", {
       seedPath: join(dir(), "absent.json"),
+      servicesSeedPath: join(dir(), "absent-services.json"),
     });
     expect(result.seedImported).toBe(0);
     expect(result.seedReason).toBe("no seed file");
@@ -235,6 +239,7 @@ describe("rehydrate", () => {
     const store = new Store(":memory:");
     const result = await rehydrate(store, ingesterWith(store, "ok"), "testnet", {
       seedPath: path,
+      servicesSeedPath: join(dir(), "absent-services.json"),
     });
     expect(result.seedImported).toBe(0);
     expect(result.errors.join(" ")).toMatch(/seed:/);
@@ -248,8 +253,14 @@ describe("rehydrate", () => {
     const store = new Store(":memory:");
     const ingester = ingesterWith(store, "ok");
 
-    await rehydrate(store, ingester, "testnet", { seedPath: path });
-    const second = await rehydrate(store, ingester, "testnet", { seedPath: path });
+    await rehydrate(store, ingester, "testnet", {
+      seedPath: path,
+      servicesSeedPath: join(dir(), "absent-services.json"),
+    });
+    const second = await rehydrate(store, ingester, "testnet", {
+      seedPath: path,
+      servicesSeedPath: join(dir(), "absent-services.json"),
+    });
 
     expect(second.seedImported).toBe(0);
     expect(store.outcomeCount()).toBe(6);

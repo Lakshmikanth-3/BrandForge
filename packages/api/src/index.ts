@@ -22,8 +22,18 @@ export {
 } from "./catalog.js";
 export type { CuratedService, CatalogEntry, ProbeResult } from "./catalog.js";
 export { SettlementListener } from "./listener.js";
-export { rehydrate, importSeedOutcomes, isSeedFile, SEED_PATH } from "./rehydrate.js";
-export type { SeedFile, RehydrateResult } from "./rehydrate.js";
+export {
+  rehydrate,
+  importSeedOutcomes,
+  importSeedServices,
+  isSeedFile,
+  isServicesSeedFile,
+  SEED_PATH,
+  SERVICES_SEED_PATH,
+} from "./rehydrate.js";
+export type { SeedFile, ServicesSeedFile, SeedService, RehydrateResult } from "./rehydrate.js";
+export { ThrottledSync, SYNC_BEFORE_PATHS } from "./sync.js";
+export type { AppOptions } from "./app.js";
 export { Reconciler, receiptsAsCsv } from "./reconcile.js";
 export { Verifier, REPO_URL } from "./verification.js";
 export type { VerificationReport, VerificationRow, CheckStatus } from "./verification.js";

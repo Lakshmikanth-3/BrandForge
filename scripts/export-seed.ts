@@ -18,7 +18,12 @@ import { dirname } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { loadConfig } from "@sentry402/shared";
 import { Store } from "../packages/api/src/db.js";
-import { SEED_PATH, type SeedFile } from "../packages/api/src/rehydrate.js";
+import {
+  SEED_PATH,
+  SERVICES_SEED_PATH,
+  type SeedFile,
+  type ServicesSeedFile,
+} from "../packages/api/src/rehydrate.js";
 import { TrustEngine } from "../packages/api/src/trust.js";
 import { CURATED } from "../packages/api/src/catalog.js";
 
@@ -42,6 +47,36 @@ const seed: SeedFile = {
 
 mkdirSync(dirname(SEED_PATH), { recursive: true });
 writeFileSync(SEED_PATH, JSON.stringify(seed, null, 2) + "\n", "utf8");
+
+const servicesSeed: ServicesSeedFile = {
+  version: 1,
+  exportedAt: seed.exportedAt,
+  network: config.network.name,
+  services: store.services({ allowlistedOnly: true, network: config.network.caip2 }).map((r) => ({
+    resourceUrl: r.resourceUrl,
+    method: r.method,
+    description: r.description,
+    payTo: r.payTo,
+    network: r.network,
+    amountBase: r.amountBase,
+    assetId: r.assetId,
+    settleCount: r.settleCount,
+    lastSeen: r.lastSeen,
+    hasDiscoveryInfo: r.hasDiscoveryInfo,
+    discoveryInput: r.discoveryInput,
+    active: r.active,
+    probeVerdict: r.probeVerdict,
+    probeStatus: r.probeStatus,
+    probeLatencyMs: r.probeLatencyMs,
+    probeLiveAmount: r.probeLiveAmount,
+    probeDrift: r.probeDrift,
+    probeColdStart: r.probeColdStart,
+    probeDetail: r.probeDetail,
+    probedAt: r.probedAt,
+  })),
+};
+writeFileSync(SERVICES_SEED_PATH, JSON.stringify(servicesSeed, null, 2) + "\n", "utf8");
+console.log(`✓ wrote ${SERVICES_SEED_PATH}: ${servicesSeed.services.length} curated services\n`);
 
 const trust = new TrustEngine(store);
 console.log(`\n✓ wrote ${SEED_PATH}: ${outcomes.length} observations (${config.network.name})\n`);

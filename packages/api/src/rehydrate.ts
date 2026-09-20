@@ -28,6 +28,7 @@ import type { CatalogIngester } from "./catalog.js";
 import type { Outcome } from "./trust.js";
 
 export const SEED_PATH = "seed/outcomes.json";
+export const SERVICES_SEED_PATH = "seed/services.json";
 
 export interface SeedFile {
   /** Schema version of this file, so a future format change is detectable. */
@@ -35,6 +36,100 @@ export interface SeedFile {
   exportedAt: string;
   network: string;
   outcomes: Outcome[];
+}
+
+/** One curated service with its last probe, as exported from the operator's machine. */
+export interface SeedService {
+  resourceUrl: string;
+  method: string;
+  description: string;
+  payTo: string;
+  network: string;
+  amountBase: number;
+  assetId: string;
+  settleCount: number;
+  lastSeen: string;
+  hasDiscoveryInfo: boolean;
+  discoveryInput: unknown;
+  active: boolean;
+  probeVerdict: string | null;
+  probeStatus: number | null;
+  probeLatencyMs: number | null;
+  probeLiveAmount: number | null;
+  probeDrift: number | null;
+  probeColdStart: boolean | null;
+  probeDetail: string | null;
+  probedAt: string | null;
+}
+
+export interface ServicesSeedFile {
+  version: 1;
+  exportedAt: string;
+  network: string;
+  services: SeedService[];
+}
+
+export function isServicesSeedFile(value: unknown): value is ServicesSeedFile {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<ServicesSeedFile>;
+  return v.version === 1 && Array.isArray(v.services) && typeof v.network === "string";
+}
+
+/**
+ * Restores the curated service registry, but only into an empty registry.
+ *
+ * A serverless cold start cannot afford a catalog ingest plus probes that may take a minute
+ * each while a free-tier service wakes up, so the registry comes from a snapshot instead. The
+ * probe results keep their ORIGINAL timestamps: showing a two-day-old probe as though it had
+ * just run would be a false claim about how fresh the verification is.
+ */
+export function importSeedServices(
+  store: Store,
+  seed: unknown,
+  expectedNetwork: string,
+): { imported: number; reason: string } {
+  if (!isServicesSeedFile(seed)) return { imported: 0, reason: "not a recognised services seed" };
+  if (seed.network !== expectedNetwork) {
+    return { imported: 0, reason: `seed is for ${seed.network}, this server is ${expectedNetwork}` };
+  }
+  if (store.services({ activeOnly: false }).length > 0) {
+    return { imported: 0, reason: "registry already populated; not overwriting" };
+  }
+
+  let imported = 0;
+  for (const svc of seed.services) {
+    if (typeof svc.resourceUrl !== "string" || typeof svc.amountBase !== "number") continue;
+    store.upsertService(
+      {
+        resourceUrl: svc.resourceUrl,
+        method: svc.method,
+        description: svc.description,
+        payTo: svc.payTo,
+        network: svc.network,
+        amountBase: svc.amountBase,
+        assetId: svc.assetId,
+        settleCount: svc.settleCount,
+        lastSeen: svc.lastSeen,
+        hasDiscoveryInfo: svc.hasDiscoveryInfo,
+        discoveryInput: svc.discoveryInput,
+      },
+      true,
+    );
+    if (svc.probeVerdict !== null) {
+      store.recordProbe(svc.resourceUrl, {
+        verdict: svc.probeVerdict,
+        httpStatus: svc.probeStatus,
+        latencyMs: svc.probeLatencyMs ?? 0,
+        liveAmountBase: svc.probeLiveAmount,
+        priceDriftRatio: svc.probeDrift,
+        coldStart: svc.probeColdStart === true,
+        detail: svc.probeDetail,
+        ...(svc.probedAt ? { probedAt: svc.probedAt } : {}),
+      });
+    }
+    imported += 1;
+  }
+  return { imported, reason: "imported into an empty registry" };
 }
 
 export function isSeedFile(value: unknown): value is SeedFile {
@@ -94,6 +189,7 @@ export function importSeedOutcomes(
 export interface RehydrateResult {
   seedImported: number;
   seedReason: string;
+  servicesImported: number;
   catalog: { normalised: number; allowlisted: number; error?: string } | null;
   probesOk: number;
   probesTotal: number;
@@ -106,12 +202,14 @@ export interface RehydrateResult {
  */
 export async function rehydrate(
   store: Store,
-  ingester: CatalogIngester,
+  /** Null skips the network catalog ingest entirely: snapshots only. For serverless. */
+  ingester: CatalogIngester | null,
   network: string,
-  opts: { seedPath?: string; log?: (line: string) => void } = {},
+  opts: { seedPath?: string; servicesSeedPath?: string; log?: (line: string) => void } = {},
 ): Promise<RehydrateResult> {
   const log = opts.log ?? (() => {});
   const seedPath = opts.seedPath ?? SEED_PATH;
+  const servicesSeedPath = opts.servicesSeedPath ?? SERVICES_SEED_PATH;
   const errors: string[] = [];
 
   let seedImported = 0;
@@ -129,9 +227,23 @@ export async function rehydrate(
   }
   log(`rehydrate: trust outcomes ${seedImported} imported (${seedReason})`);
 
+  let servicesImported = 0;
+  if (existsSync(servicesSeedPath)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(servicesSeedPath, "utf8"));
+      servicesImported = importSeedServices(store, parsed, network).imported;
+    } catch (err) {
+      errors.push(`services seed: ${err instanceof Error ? err.message : "unknown error"}`);
+    }
+  }
+  log(`rehydrate: service registry ${servicesImported} imported from snapshot`);
+
   let catalog: RehydrateResult["catalog"] = null;
   let probesOk = 0;
   let probesTotal = 0;
+  if (ingester === null) {
+    return { seedImported, seedReason, servicesImported, catalog, probesOk, probesTotal, errors };
+  }
   try {
     const ingest = await ingester.ingest();
     catalog = {
@@ -151,5 +263,5 @@ export async function rehydrate(
     errors.push(`catalog: ${err instanceof Error ? err.message : "unknown error"}`);
   }
 
-  return { seedImported, seedReason, catalog, probesOk, probesTotal, errors };
+  return { seedImported, seedReason, servicesImported, catalog, probesOk, probesTotal, errors };
 }

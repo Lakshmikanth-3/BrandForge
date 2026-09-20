@@ -512,6 +512,8 @@ export class Store {
       priceDriftRatio: number | null;
       coldStart: boolean;
       detail: string | null;
+      /** Preserves the original time when restoring from a snapshot. */
+      probedAt?: string;
     },
   ): void {
     this.db
@@ -530,7 +532,7 @@ export class Store {
         p.priceDriftRatio,
         p.coldStart ? 1 : 0,
         p.detail,
-        new Date().toISOString(),
+        p.probedAt ?? new Date().toISOString(),
         resourceUrl,
       );
   }
