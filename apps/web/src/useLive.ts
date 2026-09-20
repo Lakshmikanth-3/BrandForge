@@ -83,17 +83,57 @@ export function useLive() {
     void refreshProofs();
   }, [refreshProofs]);
 
+  /**
+   * How this host delivers live data. Unknown until /api/flow answers, because opening an
+   * event stream against a host that cannot serve one just produces a reconnect loop that
+   * reports "stream down" for something that was never going to work.
+   */
+  const [mode, setMode] = useState<"unknown" | "stream" | "poll">("unknown");
+
   useEffect(() => {
     fetch("/api/flow")
       .then((r) => r.json() as Promise<FlowShape>)
-      .then(setFlow)
-      .catch(() => setFlow(null));
+      .then((f) => {
+        setFlow(f);
+        setMode(f.stream === false ? "poll" : "stream");
+      })
+      .catch(() => {
+        setFlow(null);
+        // If we cannot even ask, fall back to the stream, which will honestly report down.
+        setMode("stream");
+      });
     void refreshSideData();
   }, [refreshSideData]);
+
+  // Polling mode: same data, fetched on an interval.
+  useEffect(() => {
+    if (mode !== "poll") return;
+    setStreamState("polling");
+    let stopped = false;
+
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/traces?limit=25");
+        const body = (await res.json()) as { traces: Trace[] };
+        if (!stopped) setTraces(body.traces);
+      } catch {
+        // Keep the last known traces; the next tick retries.
+      }
+      if (!stopped) await refreshSideData();
+    };
+
+    void tick();
+    const timer = setInterval(() => void tick(), 5_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [mode, refreshSideData]);
 
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
+    if (mode !== "stream") return;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
 
@@ -144,7 +184,7 @@ export function useLive() {
       if (retry) clearTimeout(retry);
       esRef.current?.close();
     };
-  }, [upsert, refreshSideData]);
+  }, [mode, upsert, refreshSideData]);
 
   /**
    * Fires a real unpaid request at the real paid route. Produces a genuine 402

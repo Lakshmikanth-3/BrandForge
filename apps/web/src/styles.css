@@ -808,3 +808,8 @@ footer {
   color: var(--bad);
   margin-bottom: 8px;
 }
+
+/* Polling is healthy: distinct from live (green) and down (red). */
+.stream-polling .dot {
+  background: var(--accent);
+}

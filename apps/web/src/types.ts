@@ -84,10 +84,18 @@ export interface FlowShape {
   prices: { orchestrate: string; trust: string };
   network: string;
   explorerTxBase: string;
+  /** False when the host cannot hold a stream open and the client should poll. */
+  stream?: boolean;
 }
 
 /** Connection state of the live stream. Drives the "is this real" indicator. */
-export type StreamState = "connecting" | "live" | "down";
+/**
+ * "polling" is a healthy state, not a degraded one: the host cannot hold a live stream open
+ * (a serverless function has no process that outlives the request), so the dashboard asks
+ * for fresh data on an interval instead. Showing that as "down" would report a failure that
+ * has not happened.
+ */
+export type StreamState = "connecting" | "live" | "polling" | "down";
 
 export interface Budget {
   halted: boolean;
