@@ -1,3 +1,6 @@
+import { Hero } from "./Hero";
+import { Constellation } from "./Constellation";
+import "./hero.css";
 import { useCallback, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FlowVisualiser } from "./FlowVisualiser";
@@ -84,6 +87,8 @@ export default function App() {
         </div>
       </header>
 
+      <Hero />
+
       <section className="pitch">
         <div>
           <h2>The problem</h2>
@@ -119,6 +124,13 @@ export default function App() {
             feeds it.
           </p>
         </div>
+      </section>
+
+      <section>
+        <div className="sec-head">
+          <h3>Who has paid</h3>
+        </div>
+        <Constellation receipts={receipts} />
       </section>
 
       <section>
