@@ -14,10 +14,12 @@ import { Hono } from "hono";
 import type { AppConfig } from "@sentry402/shared";
 import { PRICES, ROUTE_PATHS } from "./x402.js";
 
-const NAME = "Sentry402";
+const NAME = "BrandForge";
 const SUMMARY =
-  "Agentic x402 bridge and trust layer on Algorand. Discovers x402 services, " +
-  "verifies they deliver before paying, and settles per call in USDC under a budget.";
+  "Pay-per-kit brand identity generator on Algorand. Send a name, an industry, and a few " +
+  "vibe words; get a complete kit — strategy, logo, colour system, typography, visual " +
+  "language, UI, voice, social & marketing templates, and guidelines. Settled per kit in " +
+  "USDC over x402 — no API key, no account.";
 
 export function metadataRoutes(config: AppConfig): Hono {
   const meta = new Hono();
@@ -33,11 +35,15 @@ export function metadataRoutes(config: AppConfig): Hono {
         "",
         "## Paid endpoints",
         "",
+        `- GET ${base}${ROUTE_PATHS.brandKit}?name=<brand>&industry=<industry>&vibe=modern,bold`,
+        `  (${PRICES.brandKit} USDC) — a complete brand kit: strategy, SVG logo set, colour system`,
+        `  (ramps + WCAG contrast), typography scale, visual language, imagery, UI system, voice,`,
+        `  social & marketing templates, guidelines, and exports (CSS/Tailwind/Figma). Deterministic.`,
         `- POST ${base}${ROUTE_PATHS.orchestrate} (${PRICES.orchestrate} USDC) — route an`,
         `  agent's request to a verified x402 service and return the paid result with a receipt.`,
         `- GET ${base}${ROUTE_PATHS.trust}?url=<endpoint> (${PRICES.trust} USDC) — the`,
-        `  reliability record for any x402 endpoint, built from calls this bridge routed`,
-        `  and paid for. Endpoints with too few observations are reported as unrated.`,
+        `  reliability record for any x402 endpoint, built from calls this service routed and`,
+        `  paid for. Endpoints with too few observations are reported as unrated.`,
         "",
         "## Payment",
         "",
@@ -49,8 +55,8 @@ export function metadataRoutes(config: AppConfig): Hono {
         "",
         "## Notes",
         "",
-        "- Reliability records are built only from calls this bridge actually routed.",
-        "- An unrated service is reported as unrated rather than given a made-up score.",
+        "- Brand kits are deterministic: the same brief always returns the same kit.",
+        "- Reliability records are built only from calls this service actually routed.",
         "",
       ].join("\n"),
     );
@@ -70,6 +76,18 @@ export function metadataRoutes(config: AppConfig): Hono {
       defaultInputModes: ["application/json"],
       defaultOutputModes: ["application/json"],
       skills: [
+        {
+          id: "brand-kit",
+          name: "Generate a brand kit",
+          description:
+            "Given a brand name and optional industry and vibe words, return a complete brand " +
+            "kit: strategy, an SVG logo set, a colour system (ramps + WCAG contrast), a type " +
+            "scale, visual language, imagery direction, a UI system, voice & tone, social and " +
+            "marketing templates, guidelines, and exports (CSS, Tailwind, Figma). Deterministic.",
+          tags: ["x402", "algorand", "branding", "design", "colors", "fonts"],
+          inputModes: ["application/json"],
+          outputModes: ["application/json"],
+        },
         {
           id: "trust",
           name: "Check whether an endpoint actually delivers",
@@ -100,6 +118,11 @@ export function metadataRoutes(config: AppConfig): Hono {
         asset: config.network.usdcAsaId,
         facilitator: config.facilitatorUrl,
         routes: [
+          {
+            method: "GET",
+            path: ROUTE_PATHS.brandKit,
+            price: PRICES.brandKit,
+          },
           {
             method: "POST",
             path: ROUTE_PATHS.orchestrate,

@@ -484,12 +484,17 @@ export class Store {
   }
 
   /**
-   * Marks every service NOT in `seenUrls` inactive. Deleting would destroy the
-   * observation history the trust engine depends on.
+   * Marks every DISCOVERED service NOT in `seenUrls` inactive. Deleting would
+   * destroy the observation history the trust engine depends on.
+   *
+   * Allowlisted (curated) services are deliberately exempt: the catalog decays
+   * faster than the curation does, and our own locally-hosted endpoints never
+   * appear in discovery at all, so letting a catalog gap deactivate a curated
+   * tool would silently drop working tools from the set.
    */
   markMissingInactive(seenUrls: string[], network: string): number {
     const known = this.db
-      .prepare(`SELECT resource_url FROM services WHERE network = ? AND active = 1`)
+      .prepare(`SELECT resource_url FROM services WHERE network = ? AND active = 1 AND allowlisted = 0`)
       .all(network) as Record<string, unknown>[];
     const seen = new Set(seenUrls);
     let count = 0;

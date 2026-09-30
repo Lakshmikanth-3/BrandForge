@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "framer-motion": "^11.15.0",
+    "lucide-react": "^1.48.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.2",
@@ -20,7 +22,10 @@
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.6.1",
     "jsdom": "^25.0.1",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
     "vite": "^5.4.11"
   }
 }

@@ -105,6 +105,36 @@ describe("protocol conformance: POST /v1/orchestrate", () => {
   });
 });
 
+describe("protocol conformance: GET /v1/brand-kit (the product)", () => {
+  const path = "/v1/brand-kit?name=Northwind&industry=fintech&vibe=modern,bold";
+
+  it("returns 402 to an unpaid request", async () => {
+    const res = await app().app.request(path);
+    expect(res.status).toBe(402);
+  });
+
+  it("prices the kit at $0.03 in USDC with the challenge tag", async () => {
+    const accept = challengeOf(await app().app.request(path)).accepts[0]!;
+    expect(accept.amount).toBe("30000");
+    expect(accept.asset).toBe("10458941");
+    expect(accept.payTo).toBe(env.MERCHANT_ADDRESS);
+    expect(accept.extra?.tag).toBe(CHALLENGE_TAG);
+  });
+
+  it("advertises a Bazaar listing that names what the caller gets", async () => {
+    const description = challengeOf(await app().app.request(path)).resource?.description ?? "";
+    expect(description.length).toBeGreaterThan(80);
+    expect(description).toMatch(/brand kit/i);
+    expect(description).toMatch(/palette/i);
+  });
+
+  it("never leaks the kit to an unpaid caller", async () => {
+    const res = await app().app.request(path);
+    // A real kit body carries hex colours; the 402 must not.
+    expect(await res.text()).not.toMatch(/#[0-9a-f]{6}/i);
+  });
+});
+
 describe("tracing reflects what actually happened", () => {
   it("records an unpaid request as challenge-ok and the rest skipped", async () => {
     const parts = app();
@@ -240,7 +270,10 @@ describe("domain metadata the facilitator reads", () => {
     expect(res.headers.get("content-type")).toMatch(/text\/plain/);
 
     const body = await res.text();
-    expect(body).toMatch(/Sentry402/);
+    expect(body).toMatch(/BrandForge/);
+    // The brand-kit product is the headline listing, with its price.
+    expect(body).toMatch(/GET .*\/v1\/brand-kit/);
+    expect(body).toMatch(/\$0\.03/);
     expect(body).toMatch(/POST .*\/v1\/orchestrate/);
     expect(body).toMatch(/\$0\.05/);
     expect(body).toContain("10458941");
@@ -255,19 +288,21 @@ describe("domain metadata the facilitator reads", () => {
     expect(res.status).toBe(200);
 
     const card = await res.json();
-    expect(card.name).toBe("Sentry402");
+    expect(card.name).toBe("BrandForge");
     expect(card.payment.x402Version).toBe(2);
     expect(card.payment.network).toBe(TESTNET.caip2);
     expect(card.payment.asset).toBe("10458941");
 
     expect(card.payment.routes).toEqual(
       expect.arrayContaining([
+        { method: "GET", path: "/v1/brand-kit", price: "$0.03" },
         { method: "POST", path: "/v1/orchestrate", price: "$0.05" },
         { method: "GET", path: "/v1/trust", price: "$0.02" },
       ]),
     );
-    expect(card.payment.routes).toHaveLength(2);
+    expect(card.payment.routes).toHaveLength(3);
     expect(card.skills.map((s: { id: string }) => s.id).sort()).toEqual([
+      "brand-kit",
       "orchestrate",
       "trust",
     ]);

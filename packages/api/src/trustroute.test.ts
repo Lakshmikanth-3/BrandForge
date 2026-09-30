@@ -310,7 +310,7 @@ describe("browser paywall", () => {
     const html = await res.text();
     // The wallets a person on Algorand actually has.
     for (const wallet of ["Pera", "Defly", "Lute"]) expect(html).toContain(wallet);
-    expect(html).toContain("Sentry402");
+    expect(html).toContain("BrandForge");
   });
 
   it("still serves JSON to a machine, which must not change", async () => {

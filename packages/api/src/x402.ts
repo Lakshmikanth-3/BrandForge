@@ -35,13 +35,15 @@ import type { ResourceServerExtension } from "@x402/core/types";
 import type { MiddlewareHandler } from "hono";
 import { CHALLENGE_TAG, type AppConfig } from "@sentry402/shared";
 
-/** Price points per PRD §7 item 6, set against a $0.02 catalog median. */
+/** Price points. brandKit is the product; orchestrate/trust remain as infrastructure. */
 export const PRICES = {
+  brandKit: "$0.03",
   orchestrate: "$0.05",
   trust: "$0.02",
 } as const;
 
 export const ROUTE_PATHS = {
+  brandKit: "/v1/brand-kit",
   orchestrate: "/v1/orchestrate",
   trust: "/v1/trust",
 } as const;
@@ -133,6 +135,57 @@ const trustDiscovery = declareDiscoveryExtension({
   },
 });
 
+/**
+ * Discovery metadata for the brand-kit product. This is the Bazaar listing an agent
+ * reads to know how to call it, so the example is the real request/response shape.
+ */
+const brandKitDiscovery = declareDiscoveryExtension({
+  input: {
+    name: "Northwind",
+    industry: "fintech",
+    vibe: "modern,bold",
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The brand name" },
+      industry: {
+        type: "string",
+        description: "What the brand does, e.g. 'specialty coffee' (optional)",
+      },
+      vibe: {
+        type: "string",
+        description:
+          "Comma-separated vibe words, e.g. 'modern,bold' or 'luxury,elegant' (optional)",
+      },
+    },
+    required: ["name"],
+  },
+  output: {
+    example: {
+      name: "Northwind",
+      seed: 2853712049,
+      scheme: "complementary",
+      palette: {
+        primary: "#2f6bf7",
+        secondary: "#16305f",
+        accent: "#f7a52f",
+        dark: "#12131a",
+        light: "#f3f5fb",
+        muted: "#8b93a6",
+      },
+      fonts: {
+        heading: { family: "Space Grotesk", category: "sans-serif", weights: [500, 700] },
+        body: { family: "Inter", category: "sans-serif", weights: [400, 500] },
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Space+Grotesk...",
+      },
+      tagline: "Northwind. Modern by design.",
+      voice: ["clear", "confident"],
+      cssVariables: ":root { --brand-primary: #2f6bf7; ... }",
+    },
+  },
+});
+
 const orchestrateDiscovery = declareDiscoveryExtension({
   bodyType: "json",
   input: {
@@ -190,6 +243,27 @@ export function paidRoutes(config: AppConfig) {
   // Literal key: RoutesConfig is keyed by exact route strings, so a computed key
   // widens to an index signature and stops type-checking the value.
   return {
+    "GET /v1/brand-kit": {
+      accepts: [
+        {
+          scheme: "exact" as const,
+          price: PRICES.brandKit,
+          network: config.network.caip2 as `${string}:${string}`,
+          payTo: config.merchantAddress,
+          extra: { asset: config.network.usdcAsaId, tag: CHALLENGE_TAG },
+        },
+      ],
+      // This description IS the Bazaar listing for the product. Name what the caller gets.
+      description:
+        "Generate a complete brand kit from a short brief. Pass ?name= (and optionally " +
+        "?industry= and ?vibe=modern,bold) and receive strategy, an SVG logo set, a colour " +
+        "system (palette, 50–900 ramps, WCAG contrast), typography with a type scale, visual " +
+        "language, imagery direction, a UI system, voice & tone, social and marketing templates, " +
+        "brand guidelines, and paste-ready exports (CSS, Tailwind, Figma tokens). Deterministic: " +
+        "the same brief always returns the same kit. No API key, no account — pay per kit in USDC on Algorand.",
+      mimeType: "application/json",
+      extensions: brandKitDiscovery,
+    },
     "POST /v1/orchestrate": {
       accepts,
       // This description IS the Bazaar listing. Name what the caller gets.
@@ -226,8 +300,54 @@ export function paidRoutes(config: AppConfig) {
       mimeType: "application/json",
       extensions: trustDiscovery,
     },
+    "GET /v1/weather": {
+      accepts: [
+        {
+          scheme: "exact" as const,
+          price: "$0.005" as const,
+          network: config.network.caip2 as `${string}:${string}`,
+          payTo: config.merchantAddress,
+          extra: { asset: config.network.usdcAsaId, tag: CHALLENGE_TAG },
+        },
+      ],
+      description:
+        "Live current weather data (temperature, windspeed, conditions) sourced in real-time " +
+        "from Open-Meteo's free public API. No API key required. Settled in USDC on Algorand.",
+      mimeType: "application/json",
+    },
+    "GET /v1/token/price": {
+      accepts: [
+        {
+          scheme: "exact" as const,
+          price: "$0.002" as const,
+          network: config.network.caip2 as `${string}:${string}`,
+          payTo: config.merchantAddress,
+          extra: { asset: config.network.usdcAsaId, tag: CHALLENGE_TAG },
+        },
+      ],
+      description:
+        "Live ALGO/USDT token price fetched from the Binance public ticker API. " +
+        "Returns real market price and timestamp. Settled in USDC on Algorand.",
+      mimeType: "application/json",
+    },
+    "POST /v1/ai/image": {
+      accepts: [
+        {
+          scheme: "exact" as const,
+          price: "$0.015" as const,
+          network: config.network.caip2 as `${string}:${string}`,
+          payTo: config.merchantAddress,
+          extra: { asset: config.network.usdcAsaId, tag: CHALLENGE_TAG },
+        },
+      ],
+      description:
+        "AI image generation powered by Pollinations.ai. POST a text prompt and receive " +
+        "a URL to a real AI-generated image. No API key required. Settled in USDC on Algorand.",
+      mimeType: "application/json",
+    },
   };
 }
+
 
 /**
  * Browser paywall.
@@ -244,7 +364,7 @@ export function paidRoutes(config: AppConfig) {
 const paywall = createPaywall()
   .withNetwork(avmPaywall)
   .withConfig({
-    appName: "Sentry402",
+    appName: "BrandForge",
     testnet: true,
   })
   .build();

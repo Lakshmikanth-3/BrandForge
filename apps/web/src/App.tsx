@@ -1,830 +1,636 @@
-import { Hero } from "./Hero";
-import { Constellation } from "./Constellation";
-import "./hero.css";
-import { useCallback, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { FlowVisualiser } from "./FlowVisualiser";
-import { useLive } from "./useLive";
-import type {
-  Budget,
-  ReconcileReport,
-  Receipt,
-  Service,
-  Substitution,
-  Trace,
-  TrustRecord,
-  VerificationReport,
-} from "./types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { generateBrandKit, KNOWN_VIBES } from "@brandkit";
+import type { BrandKit } from "@brandkit";
+import type { Receipt, Stats, Trace } from "./types";
+import { KitViewer } from "./KitViewer";
+import { makeZip, downloadBlob } from "./zip";
+import "./brandkit.css";
 
-/**
- * The config that works today. It points at a local build rather than an npm
- * package, because the package is not published yet: showing an npx snippet would
- * be a copy-paste that fails.
- */
-const INSTALL_SNIPPET = `{
-  "mcpServers": {
-    "sentry402": {
-      "command": "node",
-      "args": ["/path/to/Sentry402/packages/mcp/dist/index.js"],
-      "env": { "NETWORK": "testnet" }
+const PRICE_USDC = 0.03;
+const BRAND_KIT_ROUTE = "/v1/brand-kit";
+/** brand-kit is the only $0.03 route, so its price uniquely identifies its settlements. */
+const BRAND_KIT_PRICE_BASE = 30_000;
+
+/** The vibe chips shown in the form. A curated subset of the generator's vocabulary. */
+const VIBE_CHIPS = [
+  "modern",
+  "bold",
+  "playful",
+  "luxury",
+  "warm",
+  "minimal",
+  "corporate",
+  "creative",
+  "calm",
+  "energetic",
+] as const;
+
+/* ------------------------------------------------------------------ *
+ * Data hooks
+ * ------------------------------------------------------------------ */
+
+function useProof() {
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [traces, setTraces] = useState<Trace[]>([]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, r, t] = await Promise.all([
+        fetch("/api/stats").then((x) => x.json() as Promise<Stats>),
+        // A wider window than we display: brand-kit payments are filtered out of a
+        // mixed receipt stream, so we need enough rows to find the recent ones.
+        fetch("/api/receipts?limit=50").then(
+          (x) => x.json() as Promise<{ receipts: Receipt[] }>,
+        ),
+        // Traces carry the true paid route + settlement tx id, which lets us
+        // identify a brand-kit payment even if the chain listener relabels it.
+        fetch("/api/traces?limit=50").then(
+          (x) => x.json() as Promise<{ traces: Trace[] }>,
+        ),
+      ]);
+      setStats(s);
+      setReceipts(r.receipts);
+      setTraces(t.traces);
+    } catch {
+      // Leave the last known values; a transient failure should not blank real numbers.
     }
-  }
-}`;
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), 15_000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  return { stats, receipts, traces, refresh };
+}
+
+/** Loads the kit's Google Fonts into the document so the preview renders in them. */
+function useGoogleFonts(url: string | null) {
+  useEffect(() => {
+    if (!url) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = url;
+    document.head.appendChild(link);
+    return () => {
+      document.head.removeChild(link);
+    };
+  }, [url]);
+}
+
+/** Inbound settlements for the brand-kit route only, newest first, capped. */
+function useKitPayments(receipts: Receipt[], traces: Trace[]): Receipt[] {
+  return useMemo(() => {
+    const kitTxIds = new Set(
+      traces.filter((t) => t.route === BRAND_KIT_ROUTE && t.txId).map((t) => t.txId as string),
+    );
+    return receipts
+      .filter(
+        (r) =>
+          r.direction === "in" &&
+          (r.route === BRAND_KIT_ROUTE ||
+            r.amountBase === BRAND_KIT_PRICE_BASE ||
+            kitTxIds.has(r.txId)),
+      )
+      .sort((a, b) => b.settledAt.localeCompare(a.settledAt))
+      .slice(0, 5);
+  }, [receipts, traces]);
+}
+
+/* ------------------------------------------------------------------ *
+ * App
+ * ------------------------------------------------------------------ */
+
+interface SubmittedBrief {
+  name: string;
+  industry: string;
+  vibe: string[];
+}
 
 export default function App() {
-  const {
-    traces,
-    stats,
-    flow,
-    receipts,
-    budget,
-    services,
-    substitutions,
-    verification,
-    reconcile,
-    refreshProofs,
-    streamState,
-    sendUnpaidRequest,
-  } = useLive();
-  const [sending, setSending] = useState(false);
-  const [lastStatus, setLastStatus] = useState<number | null>(null);
+  // Draft input the user is typing — does NOT drive the kit on its own.
+  const [name, setName] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [vibes, setVibes] = useState<string[]>([]);
+  // The brief that has actually been submitted. The kit is built from THIS only,
+  // when the user clicks Generate — not live on every keystroke.
+  const [brief, setBrief] = useState<SubmittedBrief | null>(null);
 
-  // The trace to feature: whichever is running, else the most recent.
-  const featured = useMemo<Trace | null>(() => {
-    const running = traces.find((t) => t.state === "running" || t.state === "stalled");
-    return running ?? traces[0] ?? null;
-  }, [traces]);
+  const kit = useMemo<BrandKit>(
+    () => generateBrandKit(brief ?? { name: "" }),
+    [brief],
+  );
+  const emptyBrief = brief === null;
+  const canGenerate = name.trim().length > 0;
+  // True when the current input differs from what's on screen — prompts a re-generate.
+  const dirty =
+    brief !== null &&
+    (brief.name !== name || brief.industry !== industry || brief.vibe.join(",") !== vibes.join(","));
 
-  const onSend = async () => {
-    setSending(true);
-    setLastStatus(null);
-    try {
-      setLastStatus(await sendUnpaidRequest());
-    } catch {
-      setLastStatus(0);
-    } finally {
-      setSending(false);
-    }
+  const generate = () => {
+    if (canGenerate) setBrief({ name, industry, vibe: vibes });
   };
 
+  useGoogleFonts(kit.fonts.googleFontsUrl);
+  const proof = useProof();
+  const kitPayments = useKitPayments(proof.receipts, proof.traces);
+
+  // The "paid kit · settled" badge is tied to a real settlement event: it shows
+  // briefly when a new brand-kit payment lands, not permanently.
+  const [justPaid, setJustPaid] = useState(false);
+  const prevPaidCount = useRef<number | null>(null);
+  useEffect(() => {
+    if (prevPaidCount.current !== null && kitPayments.length > prevPaidCount.current) {
+      setJustPaid(true);
+      const t = setTimeout(() => setJustPaid(false), 6_000);
+      prevPaidCount.current = kitPayments.length;
+      return () => clearTimeout(t);
+    }
+    prevPaidCount.current = kitPayments.length;
+  }, [kitPayments.length]);
+
+  const toggleVibe = (v: string) =>
+    setVibes((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]));
+
   return (
-    <div className="wrap">
-      <header className="head">
-        <div className="head-left">
-          <h1>Sentry402</h1>
-          <span className={`tag net net-${stats?.network ?? "unknown"}`}>
-            {stats?.network ?? "—"}
-          </span>
-          <span className={`tag stream stream-${streamState}`}>
-            <span className="dot" /> stream {streamState}
-          </span>
+    <div className="app">
+      <header className="bf-header">
+        <div className="bf-brandwrap">
+          <LogoMark />
+          <span className="bf-wordmark">BrandForge</span>
         </div>
-        <div className="counters">
-          <Counter label="settles" value={count(stats?.settleCount)} />
-          <Counter label="usdc in" value={usdc(stats?.totalUsdc)} />
-          <Counter label="distinct payers" value={count(stats?.distinctPayers)} emphasis />
-          <Counter label="net spent" value={usdc(stats?.netOutboundUsdc)} />
-        </div>
+        <HeaderStats stats={proof.stats} />
       </header>
 
-      <Hero />
+      <main className="bf-main">
+        <div className="bf-left">
+          <BriefCard
+            name={name}
+            industry={industry}
+            vibes={vibes}
+            onName={setName}
+            onIndustry={setIndustry}
+            onToggleVibe={toggleVibe}
+            onGenerate={generate}
+            canGenerate={canGenerate}
+            dirty={dirty}
+          />
+          <PayCard kit={kit} empty={emptyBrief} onSettled={proof.refresh} />
+        </div>
 
-      <section className="pitch">
-        <div>
-          <h2>The problem</h2>
-          <p>
-            x402 fixed the billing: an agent pays per call over HTTP, no account, no key.
-            What it did not fix is the wiring. Using a paid service still means a developer
-            hand-writing an integration, holding a wallet, and trusting an endpoint with
-            money that cannot be recalled. So the services exist and the demand does not.
-          </p>
-        </div>
-        <div>
-          <h2>What this is</h2>
-          <p>
-            One MCP server. Install it once and your agent gains every curated x402 service
-            on Algorand as a native tool, priced per call, paid in USDC, under a spend cap
-            you set. Your agent never sees a wallet and never handles a 402.
-          </p>
-          <p>
-            Relays and pre-spend checkers exist. An agent-native install and an enforced
-            budget with a kill switch do not.
-          </p>
-        </div>
-        <div>
-          <h2>Why here</h2>
-          <p>
-            Payments worth fractions of a cent need sub-cent fees and sub-three-second
-            finality. An agent deciding in 200ms cannot wait on settlement or pay more in
-            fees than the data costs.
-          </p>
-          <p className="emph">
-            Every call routed through this bridge is volume for another entrant&apos;s
-            endpoint. This project does not only compete on the leaderboard &mdash; it
-            feeds it.
-          </p>
-        </div>
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Who has paid</h3>
-        </div>
-        <Constellation receipts={receipts} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Live protocol flow</h3>
-          <div className="sec-actions">
-            <button className="btn" onClick={onSend} disabled={sending}>
-              {sending ? "sending…" : "Send an unpaid request"}
-            </button>
-            {lastStatus !== null ? (
-              <span className={`resp ${lastStatus === 402 ? "resp-ok" : "resp-bad"}`}>
-                HTTP {lastStatus === 0 ? "failed" : lastStatus}
-                {lastStatus === 402 ? " — payment required, as specified" : ""}
-              </span>
-            ) : null}
+        <div className="bf-right">
+          <KitViewer
+            kit={kit}
+            empty={emptyBrief}
+            unlocked={justPaid || kitPayments.length > 0}
+            onGetKit={() =>
+              document.getElementById("bf-get-the-kit")?.scrollIntoView({ behavior: "smooth", block: "center" })
+            }
+          />
+          <div className="bf-bottom">
+            <ExportCard kit={kit} empty={emptyBrief} />
+            <PaymentsCard payments={kitPayments} />
           </div>
         </div>
-        <p className="note">
-          This fires a real request at the real paid route, <code>POST {flow?.routes.orchestrate ?? "/v1/orchestrate"}</code>{" "}
-          ({flow?.prices.orchestrate ?? "$0.05"}). With no payment attached it stops at the 402 —
-          which is exactly what the flow below will show you. Nothing here is replayed.
-        </p>
-
-        <div className="panel">
-          <FlowVisualiser trace={featured} flow={flow} streamDown={streamState === "down"} />
-        </div>
-
-        <TraceHistory traces={traces} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Install</h3>
-          <span className="dim mono">{services.length} services as agent tools</span>
-        </div>
-        <p className="note">
-          Build the repo, then add this to your MCP client. It points at a local build
-          because the npm package is not published yet, and a published-package snippet
-          here would be a copy-paste that fails.
-        </p>
-        <pre className="snippet">{INSTALL_SNIPPET}</pre>
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Services the bridge can pay</h3>
-          <span className="dim mono">verified by live probe, not by the catalog</span>
-        </div>
-        <ServiceTable services={services} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Trust lookup</h3>
-          <span className="dim mono">
-            free here · {flow?.prices.trust ?? "$0.02"} at {flow?.routes.trust ?? "/v1/trust"}
-          </span>
-        </div>
-        <p className="note">
-          Paste any x402 endpoint url. This returns exactly what the paid route returns
-          and exactly what the payment gate acts on — the same record, not a preview of
-          it. An endpoint we have not routed enough calls to comes back{" "}
-          <code>unrated</code> rather than with a number we cannot justify.
-        </p>
-        <TrustLookup />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Route-around log</h3>
-          <span className="dim mono">a refusal is a feature</span>
-        </div>
-        <SubstitutionLog substitutions={substitutions} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Budget guard</h3>
-          {budget ? (
-            <span className={`tag ${budget.halted ? "halted" : ""}`}>
-              {budget.halted ? "HALTED" : budget.payerReady ? "armed" : "payer not ready"}
-            </span>
-          ) : null}
-        </div>
-        <BudgetPanel budget={budget} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Receipts</h3>
-          <span className="dim mono">
-            {stats?.merchantAddress ? `merchant ${stats.merchantAddress.slice(0, 10)}…` : ""}
-          </span>
-        </div>
-        <ReceiptStream receipts={receipts} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Verification</h3>
-          <div className="sec-actions">
-            {verification ? (
-              <span className="dim mono">
-                {verification.passing} passing · {verification.failing} failing
-              </span>
-            ) : null}
-            <button className="btn" onClick={() => void refreshProofs()}>
-              re-check
-            </button>
-          </div>
-        </div>
-        <p className="note">
-          Every row is read live from the source that would disprove it. Failing rows are
-          shown as failing — a panel that can show red is the only evidence that the green
-          rows mean anything. Rows marked <code>manual</code> have no machine-readable
-          source, so they are not claimed as passing.
-        </p>
-        <VerificationPanel report={verification} />
-      </section>
-
-      <section>
-        <div className="sec-head">
-          <h3>Reconciliation</h3>
-          <span className="dim mono">receipts against the chain, both directions</span>
-        </div>
-        <ReconcilePanel report={reconcile} />
-      </section>
-
-      <footer>
-        <span className="mono dim">
-          Every number on this page is read live from the API. No mock data, at any time.
-          An empty table means nothing has settled yet.
-        </span>
-      </footer>
+      </main>
     </div>
   );
 }
 
-function ServiceTable({ services }: { services: Service[] }) {
-  if (services.length === 0) {
-    return (
-      <p className="note dim">
-        No services in the registry yet. Run <code>npm run catalog:ingest</code>.
-      </p>
-    );
-  }
+/* ------------------------------------------------------------------ *
+ * Header
+ * ------------------------------------------------------------------ */
+
+function LogoMark() {
   return (
-    <div className="panel scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>tool</th>
-            <th>price</th>
-            <th>catalog</th>
-            <th>trust</th>
-            <th>probe</th>
-            <th>latency</th>
-            <th>what it returns</th>
-          </tr>
-        </thead>
-        <tbody>
-          {services.map((s) => {
-            const drifted = s.priceDrift !== null && Math.abs(s.priceDrift - 1) > 0.01;
-            return (
-              <tr key={s.label}>
-                <td>
-                  <span className={`dot ${s.probeVerdict === "ok" ? "ok" : "bad"}`} />
-                  {s.label}
-                </td>
-                <td className="num">{s.priceUsdc === null ? "\u2014" : s.priceUsdc.toFixed(4)}</td>
-                <td className={`num ${drifted ? "bad-text" : "dim"}`}>
-                  {s.catalogPriceUsdc === null ? "\u2014" : s.catalogPriceUsdc.toFixed(4)}
-                  {drifted && s.priceDrift !== null ? ` x${s.priceDrift.toFixed(2)}` : ""}
-                </td>
-                <td>
-                  <TrustBadge trust={s.trust} />
-                </td>
-                <td className={s.probeVerdict === "ok" ? "ok-text" : "bad-text"}>
-                  {s.probeVerdict ?? "not probed"}
-                </td>
-                <td className="num">
-                  {s.probeLatencyMs === null ? "\u2014" : `${s.probeLatencyMs}ms`}
-                </td>
-                <td className="dim summary">{s.summary}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <svg className="bf-logo" viewBox="0 0 100 100" role="img" aria-label="BrandForge logo">
+      <rect x="0" y="0" width="46" height="46" rx="8" fill="#2451D6" />
+      <rect x="54" y="0" width="46" height="46" rx="8" fill="#12A4B4" />
+      <rect x="0" y="54" width="46" height="46" rx="8" fill="#F4B33D" />
+      <rect x="54" y="54" width="46" height="46" rx="8" fill="#F3F6FB" />
+    </svg>
+  );
+}
+
+function HeaderStats({ stats }: { stats: Stats | null }) {
+  return (
+    <div className="bf-stats" aria-live="polite">
+      <HeaderStat label="Payments settled" value={num(stats?.settleCount)} />
+      <HeaderStat label="Paying wallets" value={num(stats?.distinctPayers)} />
+      <HeaderStat label="USDC received" value={stats ? stats.totalUsdc.toFixed(2) : "—"} />
+      <HeaderStat
+        label="Network"
+        value={stats ? (stats.network === "mainnet" ? "Algorand MainNet" : "Algorand TestNet") : "—"}
+        wide
+      />
     </div>
   );
 }
 
-function VerificationPanel({ report }: { report: VerificationReport | null }) {
-  const [showRaw, setShowRaw] = useState(false);
-
-  if (!report) {
-    return <p className="note dim">/api/verification did not respond.</p>;
-  }
-
+function HeaderStat({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
+  // Remounting the value span on change replays the flash+pop animation. The pulse
+  // counter starts at 0 so the very first render does not flash.
+  const prev = useRef<string | undefined>(undefined);
+  const [pulse, setPulse] = useState(0);
+  useEffect(() => {
+    if (prev.current !== undefined && prev.current !== value) setPulse((p) => p + 1);
+    prev.current = value;
+  }, [value]);
   return (
-    <div className="panel">
-      <div className="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>status</th>
-              <th>claim</th>
-              <th>what the source said</th>
-              <th>check it</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.rows.map((r) => (
-              <tr key={r.id}>
-                <td>
-                  <span className={`vstat vstat-${r.status}`}>{r.status}</span>
-                </td>
-                <td className="summary">{r.claim}</td>
-                <td className="dim summary">{r.detail}</td>
-                <td>
-                  {r.link ? (
-                    <a href={r.link} target="_blank" rel="noreferrer">
-                      {r.external ? "source" : "endpoint"}
-                    </a>
-                  ) : (
-                    <span className="dim">\u2014</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="raw-toggle">
-        <button className="btn" onClick={() => setShowRaw((v) => !v)}>
-          {showRaw ? "hide" : "show"} raw facilitator data
-        </button>
-        <span className="dim mono">checked {new Date(report.checkedAt).toLocaleTimeString()}</span>
-      </div>
-
-      {showRaw ? (
-        <pre className="snippet raw">
-          {JSON.stringify(
-            { merchantRecord: report.merchantRecord, bazaarEntries: report.bazaarEntries },
-            null,
-            2,
-          )}
-        </pre>
-      ) : null}
-    </div>
-  );
-}
-
-function ReconcilePanel({ report }: { report: ReconcileReport | null }) {
-  if (!report) {
-    return <p className="note dim">/api/reconcile did not respond.</p>;
-  }
-
-  return (
-    <div className="panel budget">
-      <div className="budget-row">
-        <div>
-          <span className="counter-label">on-chain transfers</span>
-          <span className="counter-value num">{report.chainTransfers}</span>
-        </div>
-        <div>
-          <span className="counter-label">receipts</span>
-          <span className="counter-value num">{report.receipts}</span>
-        </div>
-        <div>
-          <span className="counter-label">matched</span>
-          <span className="counter-value num">{report.matched}</span>
-        </div>
-        <div>
-          <span className="counter-label">result</span>
-          <span
-            className={`counter-value ${report.clean ? "ok-text" : "bad-text"}`}
-            style={{ fontSize: 14 }}
-          >
-            {report.error ? "unverified" : report.clean ? "clean" : "discrepancies"}
-          </span>
-        </div>
-      </div>
-
-      {report.error ? (
-        <p className="note bad-text budget-empty">
-          Could not verify: {report.error}. An unreachable indexer proves nothing, so this
-          is not a clean result.
-        </p>
-      ) : report.discrepancies.length === 0 ? (
-        <p className="note dim budget-empty">
-          Every receipt has an on-chain transaction and every on-chain transfer touching our
-          addresses has a receipt. No phantom rows in either direction.
-        </p>
-      ) : (
-        <div className="scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>kind</th>
-                <th>tx</th>
-                <th>detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.discrepancies.map((d) => (
-                <tr key={`${d.kind}-${d.txId}`}>
-                  <td className="bad-text">{d.kind}</td>
-                  <td className="dim">{d.txId.slice(0, 12)}...</td>
-                  <td className="dim summary">{d.detail}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TrustLookup() {
-  const [url, setUrl] = useState("");
-  const [record, setRecord] = useState<TrustRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const lookup = useCallback(async () => {
-    const target = url.trim();
-    if (target.length === 0) return;
-    setLoading(true);
-    setError(null);
-    setRecord(null);
-    try {
-      const res = await fetch(`/api/trust?url=${encodeURIComponent(target)}`);
-      if (res.status === 429) {
-        setError("Rate limited. The paid route at /v1/trust is not rate limited.");
-        return;
-      }
-      if (!res.ok) {
-        setError(`Lookup failed: HTTP ${res.status}`);
-        return;
-      }
-      setRecord((await res.json()) as TrustRecord);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "lookup failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [url]);
-
-  return (
-    <div className="panel lookup">
-      <form
-        className="lookup-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void lookup();
-        }}
-      >
-        <input
-          className="lookup-input"
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://some-x402-endpoint.example/resource"
-          aria-label="Endpoint url to look up"
-        />
-        <button className="btn" type="submit" disabled={loading || url.trim().length === 0}>
-          {loading ? "looking up" : "look up"}
-        </button>
-      </form>
-
-      {error ? <p className="note bad-text lookup-out">{error}</p> : null}
-
-      {record ? (
-        <div className="lookup-out">
-          <div className="lookup-head">
-            <TrustBadge trust={record} />
-            <span className="dim mono lookup-basis">{record.basis}</span>
-          </div>
-          <div className="scroll">
-            <table>
-              <tbody>
-                <LookupRow label="verdict" value={record.verdict} />
-                <LookupRow
-                  label="score"
-                  value={record.score === null ? "unrated" : record.score.toFixed(4)}
-                />
-                <LookupRow label="observations" value={String(record.observations)} />
-                <LookupRow
-                  label="success rate"
-                  value={
-                    record.successRate === null
-                      ? "\u2014"
-                      : `${(record.successRate * 100).toFixed(1)}%`
-                  }
-                />
-                <LookupRow
-                  label="paid, got nothing"
-                  value={String(record.paidNothingCount)}
-                />
-                <LookupRow
-                  label="median latency"
-                  value={
-                    record.medianLatencyMs === null ? "\u2014" : `${record.medianLatencyMs}ms`
-                  }
-                />
-                <LookupRow label="cold starts" value={String(record.coldStartCount)} />
-                <LookupRow
-                  label="last seen"
-                  value={
-                    record.lastSeenAt === null
-                      ? "never"
-                      : new Date(record.lastSeenAt).toLocaleString()
-                  }
-                />
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function LookupRow({ label, value }: { label: string; value: string }) {
-  return (
-    <tr>
-      <td className="dim lookup-label">{label}</td>
-      <td className="num">{value}</td>
-    </tr>
-  );
-}
-
-function TrustBadge({ trust }: { trust: TrustRecord }) {
-  // An unrated service shows as unrated, never as 0.00. A score from 4 calls must
-  // not look like a score from 400, so the observation count rides along.
-  if (trust.score === null) {
-    return (
-      <span className="trust trust-unrated" title={trust.basis}>
-        unrated
-        <span className="trust-n">{trust.observations}/5</span>
+    <div className="bf-stat">
+      <span className="bf-stat-label">{label}</span>
+      <span key={pulse} className={`bf-stat-value ${wide ? "wide" : ""} ${pulse > 0 ? "flash" : ""}`}>
+        {value}
       </span>
-    );
-  }
-  return (
-    <span className={`trust trust-${trust.verdict}`} title={trust.basis}>
-      <span className="num">{trust.score.toFixed(2)}</span>
-      <span className="trust-n">n={trust.observations}</span>
-    </span>
-  );
-}
-
-function SubstitutionLog({ substitutions }: { substitutions: Substitution[] }) {
-  if (substitutions.length === 0) {
-    return (
-      <p className="note dim">
-        Nothing routed around yet. Each time the trust gate refuses an endpoint it is
-        logged here with the score that caused it, whether or not an alternative existed.
-      </p>
-    );
-  }
-  return (
-    <div className="panel scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>refused</th>
-            <th>score</th>
-            <th>routed to</th>
-            <th>score</th>
-            <th>reason</th>
-            <th>when</th>
-          </tr>
-        </thead>
-        <tbody>
-          {substitutions.map((sub) => (
-            <tr key={`${sub.at}-${sub.refusedUrl}`}>
-              <td className="addr bad-text">{hostOf(sub.refusedUrl)}</td>
-              <td className="num bad-text">
-                {sub.refusedScore === null ? "unrated" : sub.refusedScore.toFixed(2)}
-              </td>
-              <td className="addr ok-text">
-                {sub.chosenUrl === null ? "no alternative" : hostOf(sub.chosenUrl)}
-              </td>
-              <td className="num ok-text">
-                {sub.chosenScore === null ? "\u2014" : sub.chosenScore.toFixed(2)}
-              </td>
-              <td className="dim summary">{sub.reason}</td>
-              <td className="dim">{new Date(sub.at).toLocaleTimeString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
+/* ------------------------------------------------------------------ *
+ * Brief
+ * ------------------------------------------------------------------ */
 
-function BudgetPanel({ budget }: { budget: Budget | null }) {
-  if (!budget) {
-    return <p className="note dim">/api/budget did not respond.</p>;
-  }
-  const used =
-    budget.caps.perDayUsdc === 0 ? 0 : budget.spentTodayUsdc / budget.caps.perDayUsdc;
-  return (
-    <div className="panel budget">
-      <div className="budget-row">
-        <div>
-          <span className="counter-label">spent today</span>
-          <span className="counter-value num">{budget.spentTodayUsdc.toFixed(6)}</span>
-        </div>
-        <div>
-          <span className="counter-label">remaining</span>
-          <span className="counter-value num">{budget.remainingTodayUsdc.toFixed(6)}</span>
-        </div>
-        <div>
-          <span className="counter-label">daily cap</span>
-          <span className="counter-value num">{budget.caps.perDayUsdc.toFixed(2)}</span>
-        </div>
-        <div>
-          <span className="counter-label">per call</span>
-          <span className="counter-value num">{budget.caps.perCallUsdc.toFixed(2)}</span>
-        </div>
-      </div>
-      <div
-        className="meter"
-        role="img"
-        aria-label={`${Math.round(used * 100)} percent of the daily cap used`}
-      >
-        <motion.div
-          className="meter-fill"
-          animate={{ width: `${Math.min(100, used * 100)}%` }}
-          transition={{ duration: 0.25, ease: "easeOut" }}
-        />
-      </div>
-      {budget.recent.length === 0 ? (
-        <p className="note dim budget-empty">
-          No outbound spend yet. Every reservation appears here, including ones released
-          because the payment did not happen.
-        </p>
-      ) : (
-        <div className="scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>route</th>
-                <th>usdc</th>
-                <th>state</th>
-                <th>tx</th>
-                <th>when</th>
-              </tr>
-            </thead>
-            <tbody>
-              {budget.recent.map((r) => (
-                <tr key={r.id}>
-                  <td>{r.route}</td>
-                  <td className="num">{r.amountUsdc.toFixed(6)}</td>
-                  <td className={`spend-${r.state}`}>{r.state}</td>
-                  <td className="dim">{r.txId ? `${r.txId.slice(0, 10)}...` : "\u2014"}</td>
-                  <td className="dim">{new Date(r.createdAt).toLocaleTimeString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Formatters that treat a missing number as missing. A value that is undefined is not zero,
- * and formatting it must not throw: one exception during render unmounts the whole page.
- */
-function usdc(n: number | null | undefined, digits = 6): string {
-  return typeof n === "number" && Number.isFinite(n) ? n.toFixed(digits) : "\u2014";
-}
-function count(n: number | null | undefined): string {
-  return typeof n === "number" && Number.isFinite(n) ? String(n) : "\u2014";
-}
-
-function Counter({
-  label,
-  value,
-  emphasis,
+function BriefCard({
+  name,
+  industry,
+  vibes,
+  onName,
+  onIndustry,
+  onToggleVibe,
+  onGenerate,
+  canGenerate,
+  dirty,
 }: {
-  label: string;
-  value: string;
-  emphasis?: boolean;
+  name: string;
+  industry: string;
+  vibes: string[];
+  onName: (v: string) => void;
+  onIndustry: (v: string) => void;
+  onToggleVibe: (v: string) => void;
+  onGenerate: () => void;
+  canGenerate: boolean;
+  dirty: boolean;
 }) {
   return (
-    <div className={`counter ${emphasis ? "counter-emph" : ""}`}>
-      <span className="counter-value num">{value}</span>
-      <span className="counter-label">{label}</span>
-    </div>
+    <section
+      className="bf-card"
+      onKeyDown={(e) => {
+        // Enter from an input submits the whole brief.
+        if (e.key === "Enter" && canGenerate) onGenerate();
+      }}
+    >
+      <div className="bf-card-head">
+        <span className="bf-eyebrow">Brief</span>
+      </div>
+
+      <label className="bf-field">
+        <span className="bf-label">Brand name</span>
+        <input
+          className="bf-input"
+          value={name}
+          onChange={(e) => onName(e.target.value)}
+          placeholder="e.g. Northwind"
+          aria-label="Brand name"
+        />
+      </label>
+
+      <label className="bf-field">
+        <span className="bf-label">What it does</span>
+        <input
+          className="bf-input"
+          value={industry}
+          onChange={(e) => onIndustry(e.target.value)}
+          placeholder="e.g. fintech"
+          aria-label="What it does"
+        />
+      </label>
+
+      <div className="bf-field">
+        <span className="bf-label">Vibe</span>
+        <div className="bf-chips">
+          {VIBE_CHIPS.map((v) => (
+            <button
+              type="button"
+              key={v}
+              className={`bf-chip ${vibes.includes(v) ? "on" : ""}`}
+              aria-pressed={vibes.includes(v)}
+              onClick={() => onToggleVibe(v)}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        <p className="bf-caption">
+          {KNOWN_VIBES.length} vibe words understood, including synonyms like “sleek”, “premium”, “earthy”.
+        </p>
+      </div>
+
+      <button type="button" className="bf-btn primary bf-generate" onClick={onGenerate} disabled={!canGenerate}>
+        {dirty ? "Update kit" : "Generate kit"}
+      </button>
+      {!canGenerate ? (
+        <p className="bf-caption">Enter a brand name, then generate your kit.</p>
+      ) : dirty ? (
+        <p className="bf-caption">Your brief changed — click to rebuild the kit.</p>
+      ) : null}
+    </section>
   );
 }
 
-/** Recent traces, newest first, so a judge can see more than the current one. */
-function TraceHistory({ traces }: { traces: Trace[] }) {
-  if (traces.length === 0) {
-    return <p className="note dim">No traces yet. Send a request to produce one.</p>;
+/* ------------------------------------------------------------------ *
+ * Pay
+ * ------------------------------------------------------------------ */
+
+interface Challenge {
+  amountUsdc: number | null;
+  amountBase: string | null;
+  network: string | null;
+  asset: string | null;
+  payTo: string | null;
+  scheme: string | null;
+  tag: string | null;
+  version: number | null;
+}
+
+/** Decodes the base64 `payment-required` header into the fields we display. */
+function parseChallenge(header: string | null): Challenge | null {
+  if (!header) return null;
+  try {
+    const decoded = JSON.parse(atob(header.trim())) as {
+      x402Version?: number;
+      accepts?: {
+        scheme?: string;
+        network?: string;
+        amount?: string;
+        asset?: string;
+        payTo?: string;
+        extra?: { tag?: string; asset?: string };
+      }[];
+    };
+    const a = decoded.accepts?.[0];
+    if (!a) return null;
+    const amount = Number(a.amount);
+    return {
+      amountUsdc: Number.isFinite(amount) ? amount / 1_000_000 : null,
+      amountBase: a.amount ?? null,
+      network: a.network ?? null,
+      asset: a.asset ?? a.extra?.asset ?? null,
+      payTo: a.payTo ?? null,
+      scheme: a.scheme ?? null,
+      tag: a.extra?.tag ?? null,
+      version: decoded.x402Version ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function PayCard({ kit, empty, onSettled }: { kit: BrandKit; empty: boolean; onSettled: () => void }) {
+  const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const [status, setStatus] = useState<number | null>(null);
+  const [checking, setChecking] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  const paidUrl = useMemo(() => {
+    const params = new URLSearchParams({ name: kit.name });
+    if (kit.brief.industry) params.set("industry", kit.brief.industry);
+    if ((kit.brief.vibe?.length ?? 0) > 0) params.set("vibe", (kit.brief.vibe ?? []).join(","));
+    return `/v1/brand-kit?${params.toString()}`;
+  }, [kit]);
+
+  const pay = useCallback(() => {
+    // Opens the paid endpoint. A browser gets the x402 paywall (Pera / Defly / Lute);
+    // after payment the same kit is returned from the API. Refresh proof shortly after.
+    window.open(paidUrl, "_blank", "noopener");
+    timeoutRef.current = window.setTimeout(onSettled, 12_000);
+  }, [paidUrl, onSettled]);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+
+  const previewChallenge = useCallback(async () => {
+    setChecking(true);
+    setChallenge(null);
+    setStatus(null);
+    try {
+      const res = await fetch(paidUrl);
+      setStatus(res.status);
+      setChallenge(parseChallenge(res.headers.get("payment-required")));
+    } catch {
+      setStatus(0);
+    } finally {
+      setChecking(false);
+    }
+  }, [paidUrl]);
+
+  return (
+    <section className="bf-card" id="bf-get-the-kit">
+      <div className="bf-card-head">
+        <span className="bf-eyebrow">Get the kit</span>
+        <span className="bf-price">${PRICE_USDC.toFixed(2)} USDC</span>
+      </div>
+
+      <button type="button" className="bf-btn primary" onClick={pay} disabled={empty}>
+        Pay $0.03 via x402 →
+      </button>
+      <button
+        type="button"
+        className="bf-btn outline"
+        onClick={() => void previewChallenge()}
+        disabled={checking}
+      >
+        {checking ? "checking…" : "Show the 402 challenge"}
+      </button>
+      {empty ? <p className="bf-caption">Generate a kit first, then pay to get it.</p> : null}
+
+      <ChallengeBox status={status} challenge={challenge} />
+    </section>
+  );
+}
+
+function ChallengeBox({ status, challenge }: { status: number | null; challenge: Challenge | null }) {
+  if (status === null) {
+    return <div className="bf-challenge empty">challenge appears here</div>;
+  }
+  const rows: [string, ReactNode][] = [];
+  rows.push([
+    "status",
+    <strong className="bf-strong">
+      {status === 402 ? "HTTP 402 Payment Required" : status === 0 ? "request failed" : `HTTP ${status}`}
+    </strong>,
+  ]);
+  if (challenge) {
+    if (challenge.amountUsdc !== null) {
+      rows.push([
+        "price",
+        `$${challenge.amountUsdc.toFixed(2)} · ${challenge.amountBase ?? "?"} base units`,
+      ]);
+    }
+    rows.push(["asset", `USDC · ASA ${challenge.asset ?? "—"}`]);
+    rows.push(["network", networkLabel(challenge.network)]);
+    rows.push(["payTo", truncMid(challenge.payTo)]);
+    rows.push(["scheme", `x402 v${challenge.version ?? 2} · ${challenge.scheme ?? "exact"}`]);
+    if (challenge.tag) rows.push(["tag", challenge.tag]);
   }
   return (
-    <div className="panel scroll trace-history">
-      <table>
-        <thead>
-          <tr>
-            <th>trace</th>
-            <th>flow</th>
-            <th>route</th>
-            <th>outcome</th>
-            <th>stopped at</th>
-            <th>total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {traces.map((t) => {
-            const halt =
-              t.steps.find((s) => s.state === "failed") ??
-              t.steps.find((s) => s.state === "stalled");
-            return (
-              <tr key={t.id}>
-                <td className="dim">{t.id.slice(0, 8)}</td>
-                <td className={`flow-${t.flow}`}>{t.flow}</td>
-                <td>{t.route}</td>
-                <td className={`state-${t.state}`}>{t.state}</td>
-                <td className="dim">{halt ? halt.label : "—"}</td>
-                <td className="num">{t.totalMs === null ? "…" : `${t.totalMs}ms`}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="bf-challenge filled">
+      {rows.map(([k, v], i) => (
+        <div className="bf-krow" style={{ animationDelay: `${i * 0.06}s` }} key={k}>
+          <span className="bf-k">{k}</span>
+          <span className="bf-v">{v}</span>
+        </div>
+      ))}
     </div>
   );
 }
 
-function ReceiptStream({ receipts }: { receipts: Receipt[] }) {
-  if (receipts.length === 0) {
+/* ------------------------------------------------------------------ *
+ * Export
+ * ------------------------------------------------------------------ */
+
+const EXPORT_TABS = ["CSS", "Tailwind", "JSON"] as const;
+
+function ExportCard({ kit, empty }: { kit: BrandKit; empty: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const [tab, setTab] = useState<(typeof EXPORT_TABS)[number]>("CSS");
+  const slug = kit.meta.slug;
+
+  const fullJson = useMemo(() => JSON.stringify(kit, null, 2), [kit]);
+  const tabText =
+    tab === "CSS" ? kit.exports.cssVariables : tab === "Tailwind" ? kit.exports.tailwind : fullJson;
+
+  const copy = useCallback((text: string) => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      setFlash(true);
+      setTimeout(() => setCopied(false), 2_000);
+      setTimeout(() => setFlash(false), 500);
+    });
+  }, []);
+
+  const zip = useCallback(() => {
+    const blob = makeZip([
+      { name: `${slug}/brand-kit.json`, content: fullJson },
+      { name: `${slug}/brand.css`, content: kit.exports.cssVariables },
+      { name: `${slug}/tailwind.config.js`, content: kit.exports.tailwind },
+      { name: `${slug}/figma-tokens.json`, content: kit.exports.figmaTokens },
+      { name: `${slug}/logo-primary.svg`, content: kit.logo.primary },
+      { name: `${slug}/logo-icon.svg`, content: kit.logo.icon },
+      { name: `${slug}/logo-stacked.svg`, content: kit.logo.secondary },
+      { name: `${slug}/guidelines.html`, content: kit.guidelines.html },
+    ]);
+    downloadBlob(blob, `${slug}-brand-kit.zip`);
+  }, [kit, fullJson, slug]);
+
+  if (empty) {
     return (
-      <p className="note dim">
-        No settlements yet. Rows appear here as USDC lands, each linking to the transaction
-        on an explorer.
-      </p>
+      <section className="bf-card">
+        <div className="bf-card-head">
+          <span className="bf-eyebrow">Export</span>
+        </div>
+        <p className="bf-empty-note">Generate a kit to export its CSS, Tailwind, Figma tokens and zip.</p>
+      </section>
     );
   }
+
   return (
-    <div className="panel scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>dir</th>
-            <th>payer</th>
-            <th>usdc</th>
-            <th>latency</th>
-            <th>settled</th>
-            <th>tx</th>
-          </tr>
-        </thead>
-        <tbody>
-          <AnimatePresence initial={false}>
-            {receipts.map((r) => (
-              <motion.tr
-                key={r.txId}
-                initial={{ opacity: 0, backgroundColor: "rgba(47,129,247,0.14)" }}
-                animate={{ opacity: 1, backgroundColor: "rgba(0,0,0,0)" }}
-                transition={{ duration: 0.4, ease: "easeOut" }}
-              >
-                <td className={r.direction === "in" ? "dir-in" : "dir-out"}>{r.direction}</td>
-                <td className="addr">{r.payer}</td>
-                <td className="num">{r.amountUsdc.toFixed(6)}</td>
-                <td className="num">{r.latencyMs === null ? "—" : `${r.latencyMs}ms`}</td>
-                <td className="dim">{new Date(r.settledAt).toLocaleTimeString()}</td>
-                <td>
-                  <a href={r.explorerUrl} target="_blank" rel="noreferrer">
-                    {r.txId.slice(0, 10)}…
-                  </a>
-                </td>
-              </motion.tr>
-            ))}
-          </AnimatePresence>
-        </tbody>
-      </table>
-    </div>
+    <section className="bf-card">
+      <div className="bf-card-head">
+        <span className="bf-eyebrow">Export</span>
+      </div>
+      <div className="bf-export">
+        <button type="button" className={`bf-btn export ${copied ? "done" : ""}`} onClick={() => copy(kit.exports.cssVariables)}>
+          {copied ? "Copied" : "Copy CSS variables"}
+        </button>
+        <button type="button" className="bf-btn export" onClick={() => copy(kit.exports.tailwind)}>
+          Copy Tailwind config
+        </button>
+        <a className="bf-btn export" href={`data:application/json,${encodeURIComponent(fullJson)}`} download={`${slug}-kit.json`}>
+          Download JSON
+        </a>
+        <a className="bf-btn export" href={`data:application/json,${encodeURIComponent(kit.exports.figmaTokens)}`} download={`${slug}-figma-tokens.json`}>
+          Download Figma tokens
+        </a>
+        <button type="button" className="bf-btn export" onClick={zip}>
+          Download full kit (.zip)
+        </button>
+      </div>
+
+      <div className="bf-code-tabs">
+        {EXPORT_TABS.map((t) => (
+          <button key={t} type="button" className={`bf-codetab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>
+            {t}
+          </button>
+        ))}
+      </div>
+      <pre className={`bf-code ${flash ? "flash" : ""}`}>{tabText}</pre>
+    </section>
   );
+}
+
+/* ------------------------------------------------------------------ *
+ * Recent brand kit payments
+ * ------------------------------------------------------------------ */
+
+function PaymentsCard({ payments }: { payments: Receipt[] }) {
+  return (
+    <section className="bf-card">
+      <div className="bf-card-head">
+        <span className="bf-eyebrow">Recent brand kit payments</span>
+      </div>
+      {payments.length === 0 ? (
+        <div className="bf-empty">no brand-kit payments yet</div>
+      ) : (
+        <ul className="bf-pay-list">
+          {payments.map((r) => (
+            <li className="bf-pay-row" key={r.txId}>
+              <div className="bf-pay-line">
+                <span className="bf-pay-label">
+                  <span className="bf-pay-dot" /> brand-kit
+                </span>
+                <span className="bf-pay-amount">+{r.amountUsdc.toFixed(2)} USDC</span>
+              </div>
+              <div className="bf-pay-meta">
+                <span>from {truncMid(r.payer)}</span>
+                <a href={r.explorerUrl} target="_blank" rel="noreferrer" className="bf-pay-link">
+                  tx {truncMid(r.txId)} ↗
+                </a>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Helpers
+ * ------------------------------------------------------------------ */
+
+function num(n: number | null | undefined): string {
+  return typeof n === "number" && Number.isFinite(n) ? String(n) : "—";
+}
+
+/** Middle-truncates an address / tx id, keeping the ends. */
+function truncMid(s: string | null, head = 8, tail = 8): string {
+  if (!s) return "—";
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
+
+function networkLabel(caip2: string | null): string {
+  if (!caip2) return "—";
+  // Distinguish by genesis hash so the 402 panel names the real network.
+  if (caip2.includes("wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8")) return "Algorand MainNet";
+  if (caip2.startsWith("algorand:")) return "Algorand TestNet";
+  return caip2;
 }

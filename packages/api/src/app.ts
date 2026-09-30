@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { publicConfig, type AppConfig } from "@sentry402/shared";
+import { publicConfig, generateBrandKit, type AppConfig } from "@sentry402/shared";
 import { accountStatus, type AccountStatus } from "./chain.js";
 import { Store } from "./db.js";
 import { TraceHub } from "./trace.js";
@@ -219,6 +219,86 @@ export function createApp(
     trustCache.set(url, record);
     return c.json({ ...record, cached: false });
   });
+
+  // --- BRAND KIT: the paid product ---
+  // A caller pays once and receives a complete, deterministic brand kit. The same
+  // generator runs client-side for the free live preview, so the paid bytes and the
+  // preview never drift. Base units: 30_000 = $0.03 (USDC has 6 decimals).
+  const BRAND_KIT_PRICE_BASE = 30_000;
+  app.use(ROUTE_PATHS.brandKit, traceMiddleware(hub, store, config, BRAND_KIT_PRICE_BASE));
+  app.use(ROUTE_PATHS.brandKit, publicUrlMiddleware(config));
+  app.use(ROUTE_PATHS.brandKit, x402Middleware(config));
+  app.get(ROUTE_PATHS.brandKit, (c) => {
+    const name = c.req.query("name");
+    if (!name || name.trim().length === 0) {
+      return c.json({ error: "name query parameter required" }, 400);
+    }
+    const industry = c.req.query("industry")?.trim();
+    // vibe is comma-separated so the whole brief fits in a URL the browser paywall can pay.
+    const vibe = (c.req.query("vibe") ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0);
+    const kit = generateBrandKit({
+      name,
+      ...(industry ? { industry } : {}),
+      ...(vibe.length > 0 ? { vibe } : {}),
+    });
+    return c.json(kit);
+  });
+  // ------------------------------------
+
+  // --- REAL X402 ENDPOINTS ---
+  const WEATHER_PRICE_BASE = 5_000; // $0.005
+  app.use("/v1/weather", traceMiddleware(hub, store, config, WEATHER_PRICE_BASE));
+  app.use("/v1/weather", publicUrlMiddleware(config));
+  app.use("/v1/weather", x402Middleware(config));
+  app.get("/v1/weather", async (c) => {
+    // Real implementation: Fetch from Open-Meteo (New York coordinates)
+    try {
+      const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=40.71&longitude=-74.00&current_weather=true");
+      const data = await res.json() as any;
+      return c.json({ location: "New York", temperature_celsius: data.current_weather.temperature, windspeed: data.current_weather.windspeed, time: data.current_weather.time });
+    } catch {
+      return c.json({ error: "Upstream weather API failed" }, 502);
+    }
+  });
+
+  const AI_IMAGE_PRICE_BASE = 15_000; // $0.015
+  app.use("/v1/ai/image", traceMiddleware(hub, store, config, AI_IMAGE_PRICE_BASE));
+  app.use("/v1/ai/image", publicUrlMiddleware(config));
+  app.use("/v1/ai/image", x402Middleware(config));
+  app.post("/v1/ai/image", async (c) => {
+    // Real implementation: Pollinations AI
+    try {
+      const body = await c.req.json().catch(() => ({ prompt: "Cyberpunk Algorand Hacker" }));
+      const prompt = body.prompt || "Cyberpunk Algorand Hacker";
+      const encoded = encodeURIComponent(prompt);
+      return c.json({ 
+        prompt, 
+        image_url: `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true`,
+        status: "generated" 
+      });
+    } catch {
+      return c.json({ error: "Failed to generate image" }, 502);
+    }
+  });
+
+  const TOKEN_PRICE_BASE = 2_000; // $0.002
+  app.use("/v1/token/price", traceMiddleware(hub, store, config, TOKEN_PRICE_BASE));
+  app.use("/v1/token/price", publicUrlMiddleware(config));
+  app.use("/v1/token/price", x402Middleware(config));
+  app.get("/v1/token/price", async (c) => {
+    // Real implementation: Binance Public API for ALGO price
+    try {
+      const res = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=ALGOUSDT");
+      const data = await res.json() as any;
+      return c.json({ token: "ALGO", price_usd: parseFloat(data.price), timestamp: new Date().toISOString() });
+    } catch {
+      return c.json({ error: "Upstream price API failed" }, 502);
+    }
+  });
+  // ------------------------------------
 
   // Phase 1 payload is a stub. Phase 3 replaces this body with the bridged call;
   // the payment path above does not change.

@@ -11,6 +11,12 @@ import {
   type CatalogEntry,
 } from "./catalog.js";
 
+/** True for a loopback URL — our own locally-hosted endpoints, not external ones. */
+function isLoopback(url: string): boolean {
+  const host = new URL(url).hostname;
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
 /** A realistic catalog item, shaped like the live listing. */
 function item(over: Record<string, unknown> = {}) {
   return {
@@ -123,8 +129,11 @@ describe("parseChallenge", () => {
 describe("curation", () => {
   it("ships a handful of services, not the whole catalog", () => {
     // PRD §22: a bridge to six good things beats a broken bridge to everything.
-    expect(CURATED.length).toBeGreaterThanOrEqual(4);
-    expect(CURATED.length).toBeLessThanOrEqual(6);
+    // Loopback endpoints are our own locally-hosted demos, not external catalog
+    // entries, so the external-service cap is measured without them.
+    const external = CURATED.filter((c) => !isLoopback(c.url));
+    expect(external.length).toBeGreaterThanOrEqual(4);
+    expect(external.length).toBeLessThanOrEqual(6);
   });
 
   it("curates exact URLs, so one vendor cannot flood the tool list", () => {
@@ -136,9 +145,13 @@ describe("curation", () => {
     }
   });
 
-  it("requires TLS on every curated endpoint", () => {
-    // Payment material never travels over an unencrypted hop.
-    for (const c of CURATED) expect(new URL(c.url).protocol).toBe("https:");
+  it("requires TLS on every remote curated endpoint", () => {
+    // Payment material never travels over an unencrypted hop. Loopback never
+    // leaves the machine, so the rule applies to every non-loopback endpoint.
+    for (const c of CURATED) {
+      if (isLoopback(c.url)) continue;
+      expect(new URL(c.url).protocol).toBe("https:");
+    }
   });
 
   it("gives every curated service an agent-readable label and summary", () => {
@@ -287,9 +300,10 @@ describe("service registry", () => {
     expect(store.services()).toHaveLength(2);
   });
 
-  it("marks a vanished service inactive instead of deleting its history", () => {
-    store.upsertService(entry("https://a.test/x"), true);
-    store.upsertService(entry("https://b.test/y"), true);
+  it("marks a vanished discovered service inactive instead of deleting its history", () => {
+    // Discovered (non-allowlisted) services are the ones the catalog can drop.
+    store.upsertService(entry("https://a.test/x"), false);
+    store.upsertService(entry("https://b.test/y"), false);
 
     const inactive = store.markMissingInactive(["https://a.test/x"], TESTNET.caip2);
     expect(inactive).toBe(1);
@@ -298,12 +312,21 @@ describe("service registry", () => {
     expect(store.services({ activeOnly: false })).toHaveLength(2);
   });
 
-  it("reactivates a service that returns to the catalog", () => {
-    store.upsertService(entry("https://a.test/x"), true);
+  it("reactivates a discovered service that returns to the catalog", () => {
+    store.upsertService(entry("https://a.test/x"), false);
     store.markMissingInactive([], TESTNET.caip2);
     expect(store.services({ activeOnly: true })).toHaveLength(0);
 
+    store.upsertService(entry("https://a.test/x"), false);
+    expect(store.services({ activeOnly: true })).toHaveLength(1);
+  });
+
+  it("keeps a curated service active even when the catalog drops it", () => {
+    // Curated tools (and our own locally-hosted endpoints, which never appear in
+    // discovery) must not be deactivated by a catalog gap.
     store.upsertService(entry("https://a.test/x"), true);
+    const inactive = store.markMissingInactive([], TESTNET.caip2);
+    expect(inactive).toBe(0);
     expect(store.services({ activeOnly: true })).toHaveLength(1);
   });
 

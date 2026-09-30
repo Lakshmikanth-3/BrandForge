@@ -335,6 +335,24 @@ export const CURATED: readonly CuratedService[] = [
     label: "pr_review",
     summary: "Reviews a GitHub pull request and returns findings, under a spend ceiling.",
   },
+  {
+    url: "http://127.0.0.1:4021/v1/weather",
+    method: "GET",
+    label: "weather_current",
+    summary: "Live current weather (temperature, windspeed) fetched from Open-Meteo. Real data, no API key.",
+  },
+  {
+    url: "http://127.0.0.1:4021/v1/ai/image",
+    method: "POST",
+    label: "ai_image_generate",
+    summary: "Generate a real AI image via Pollinations.ai. POST a prompt, receive an image URL.",
+  },
+  {
+    url: "http://127.0.0.1:4021/v1/token/price",
+    method: "GET",
+    label: "algo_price",
+    summary: "Live ALGO/USDT price fetched from Binance public ticker. Real market data.",
+  },
 ];
 
 const CURATED_URLS = new Set(CURATED.map((c) => c.url));

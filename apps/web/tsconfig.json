@@ -11,7 +11,10 @@
     "skipLibCheck": true,
     "noEmit": true,
     "verbatimModuleSyntax": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@brandkit": ["../../packages/shared/src/brandkit.ts"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }
